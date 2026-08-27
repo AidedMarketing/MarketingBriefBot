@@ -45,6 +45,64 @@ from sources import refresh_sources
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 
+def split_message(text: str, limit: int = 3800):
+    text = (text or "").strip()
+    if not text:
+        return []
+
+    chunks = []
+    remaining = text
+    while len(remaining) > limit:
+        window = remaining[:limit]
+        candidates = [
+            window.rfind("\n\n"),
+            window.rfind("\n- "),
+            window.rfind("\n• "),
+            window.rfind(". "),
+        ]
+        break_at = max(candidates)
+        if break_at < int(limit * 0.55):
+            break_at = limit
+        else:
+            break_at += 1
+
+        chunk = remaining[:break_at].strip()
+        if chunk:
+            chunks.append(chunk)
+        remaining = remaining[break_at:].strip()
+
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+async def send_long_reply(message, text: str):
+    for chunk in split_message(text):
+        await message.reply_text(chunk)
+
+
+def diagnostic_match(article: dict, query: str):
+    body = (article.get("plain_text") or "")
+    needle = query.strip().lower()
+
+    if not needle:
+        return None
+
+    pos = body.lower().find(needle)
+    if pos < 0:
+        return {"found": False, "position": None, "snippet": ""}
+
+    ratio = pos / max(1, len(body))
+    position = "early" if ratio < 0.33 else "middle" if ratio < 0.67 else "late"
+
+    start = max(0, pos - 140)
+    end = min(len(body), pos + len(query) + 140)
+    snippet = body[start:end].replace("\n", " ").strip()
+
+    return {"found": True, "position": position, "snippet": snippet}
+
+
+
 def content_label(article: dict) -> str:
     status = article.get("content_status") or "metadata_only"
     if status == "full":
@@ -93,6 +151,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/topics — Preference signals\n"
         "/notes — Learning notes\n"
         "/refresh — Find new articles\n"
+        "/debugarticle <keyword> — Inspect stored article context\n"
         "/finishimport — Finish an article import\n"
         "/cancelimport — Cancel an article import\n"
         "/end — End an active discussion\n"
@@ -191,6 +250,48 @@ async def notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i, r in enumerate(rows, 1):
         lines.append(f'{i}. <b>{escape(r["title"])}</b>\n{escape(r["note"])}')
     await update.message.reply_text("\n\n".join(lines), parse_mode="HTML")
+
+
+async def debug_article_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    article = get_active_discussion(uid)
+
+    if not article:
+        await update.message.reply_text(
+            "There isn't an active article discussion. Tap 💬 Discuss on an article first."
+        )
+        return
+
+    query = " ".join(context.args).strip()
+    status = article.get("content_status") or "metadata_only"
+    source_type = article.get("source_type") or "unknown"
+    word_count = article.get("word_count") or 0
+
+    lines = [
+        "🧪 Article Diagnostics",
+        "",
+        f"Title: {article['title']}",
+        f"Publication: {article['publication']}",
+        f"Content status: {status}",
+        f"Source type: {source_type}",
+        f"Stored words: {word_count:,}",
+    ]
+
+    if query:
+        result = diagnostic_match(article, query)
+        lines.append(f"Query: {query}")
+        lines.append(f"Found in stored text: {'yes' if result['found'] else 'no'}")
+        if result["found"]:
+            lines.append(f"Approximate location: {result['position']}")
+            if result["snippet"]:
+                lines.extend(["", "Nearby context:", result["snippet"][:500]])
+    else:
+        lines.extend([
+            "",
+            "Add a keyword or short phrase after the command to test whether it exists in stored article text."
+        ])
+
+    await update.message.reply_text("\n".join(lines))
 
 
 async def end_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -405,7 +506,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("I couldn't reach the discussion model right now.")
         return
     add_discussion_message(uid, session["id"], "assistant", answer)
-    await update.message.reply_text(answer)
+    await send_long_reply(update.message, answer)
 
 
 def main():
@@ -425,6 +526,7 @@ def main():
         ("topics", topics),
         ("notes", notes),
         ("refresh", refresh_command),
+        ("debugarticle", debug_article_command),
         ("end", end_command),
         ("note", note_command),
         ("finishimport", finish_import_command),
