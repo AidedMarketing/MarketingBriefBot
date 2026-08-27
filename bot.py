@@ -16,7 +16,7 @@ from telegram.ext import (
     filters,
 )
 
-from ai_provider import AIUnavailable, create_learning_note, discuss
+from ai_provider import AIUnavailable, create_learning_note, discuss, guided_learning_action, reading_lens
 from database import (
     add_discussion_message,
     add_reader_excerpt,
@@ -151,10 +151,24 @@ def article_keyboard(article: dict) -> InlineKeyboardMarkup:
             InlineKeyboardButton("👎 Less Like This", callback_data=f"dislike:{aid}"),
             InlineKeyboardButton("💬 Discuss", callback_data=f"discuss:{aid}"),
         ],
+        [InlineKeyboardButton("🧭 Reading Lens", callback_data=f"lens:{aid}")],
     ]
     if (article.get("content_status") or "metadata_only") != "full":
         rows.append([InlineKeyboardButton("📥 Import Article Context", callback_data=f"import:{aid}")])
     return InlineKeyboardMarkup(rows)
+
+
+def discussion_keyboard(article_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🧠 Key Ideas", callback_data=f"learn:keyideas:{article_id}"),
+            InlineKeyboardButton("🎯 Apply It", callback_data=f"learn:apply:{article_id}"),
+        ],
+        [
+            InlineKeyboardButton("🧪 Challenge Me", callback_data=f"learn:challenge:{article_id}"),
+            InlineKeyboardButton("📝 Save Note", callback_data=f"learn:note:{article_id}"),
+        ],
+    ])
 
 
 def format_article(article: dict, heading: str = "Today's Recommended Read") -> str:
@@ -406,13 +420,55 @@ async def cancel_import_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def article_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    action, aid_text = q.data.split(":", 1)
-    aid = int(aid_text)
+    parts = q.data.split(":")
+    action = parts[0]
+    if action == "learn":
+        mode = parts[1]
+        aid = int(parts[2])
+    else:
+        aid = int(parts[1])
     uid = update.effective_user.id
     article = get_article(aid)
 
     if not article:
         await q.answer("Article not found.", show_alert=True)
+        return
+
+    if action == "learn":
+        start_discussion(uid, aid)
+        article = attach_reader_context(article, uid)
+        history_rows = get_discussion_history(uid, aid)
+
+        if mode == "note":
+            if not history_rows:
+                await q.answer()
+                await q.message.reply_text("Talk through the article with me first, then save a learning note.")
+                return
+            try:
+                note = await asyncio.to_thread(create_learning_note, article, history_rows)
+            except Exception:
+                await q.answer()
+                await q.message.reply_text("I couldn't create the learning note right now.")
+                return
+            save_learning_note(uid, aid, note)
+            await q.answer("Note saved 📝")
+            await q.message.reply_text(
+                f"📝 <b>Learning Note Saved</b>\n\n{escape(note)}",
+                parse_mode="HTML",
+            )
+            return
+
+        await q.answer()
+        await q.message.chat.send_action("typing")
+        try:
+            answer = await asyncio.to_thread(guided_learning_action, article, history_rows, mode)
+        except Exception:
+            await q.message.reply_text("I couldn't run that learning action right now.")
+            return
+
+        add_discussion_message(uid, aid, "assistant", answer)
+        record_activity(aid, f"learn_{mode}", uid)
+        await send_long_reply(q.message, answer)
         return
 
     if action == "save":
@@ -440,6 +496,19 @@ async def article_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
         return
+    if action == "lens":
+        article = attach_reader_context(article, uid)
+        await q.answer()
+        await q.message.chat.send_action("typing")
+        try:
+            lens = await asyncio.to_thread(reading_lens, article)
+        except Exception:
+            await q.message.reply_text("I couldn't build the reading lens right now.")
+            return
+        record_activity(aid, "reading_lens", uid)
+        await send_long_reply(q.message, "🧭 Reading Lens\n\n" + lens)
+        return
+
     if action == "discuss":
         record_activity(aid, "discussed", uid, True)
         start_discussion(uid, aid)
@@ -459,8 +528,9 @@ async def article_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "💬 <b>Discussion started</b>\n\n"
             f"<b>{escape(article['title'])}</b>\n"
             f"{escape(grounding)}\n\n"
-            "Send your reaction or question. I'll stay tied to this article until /end.",
+            "Send your reaction or question, or use a guided learning action below.",
             parse_mode="HTML",
+            reply_markup=discussion_keyboard(aid),
         )
 
 
@@ -614,7 +684,7 @@ def main():
     app.add_handler(MessageHandler(filters.Document.ALL, document_import))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
 
-    print("My Marketing Brief v0.7 is running...", flush=True)
+    print("My Marketing Brief v0.8 is running...", flush=True)
     app.run_polling()
 
 
