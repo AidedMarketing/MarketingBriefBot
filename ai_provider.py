@@ -171,7 +171,7 @@ def _history_text(history: Iterable[dict]) -> str:
     return "\n".join(lines[-12:])
 
 
-def _call_openai(instructions: str, prompt: str, max_output_tokens: int = 700) -> str:
+def _call_openai(instructions: str, prompt: str, max_output_tokens: int = 1600) -> str:
     if not OPENAI_API_KEY:
         raise AIUnavailable("OPENAI_API_KEY is not configured.")
 
@@ -212,7 +212,7 @@ def discuss(article: dict, history: list[dict], user_message: str) -> str:
         f"RECENT DISCUSSION\n{_history_text(history) or '(none yet)'}\n\n"
         f"USER MESSAGE\n{user_message}"
     )
-    return _call_openai(instructions, prompt)
+    return _call_openai(instructions, prompt, max_output_tokens=1600)
 
 
 def create_learning_note(article: dict, history: list[dict]) -> str:
