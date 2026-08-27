@@ -1,42 +1,32 @@
 # MarketingBriefBot
 
-A mobile-first Telegram bot that curates professional reading from Harvard Business Review, Marketing Brew, and MIT Sloan Management Review.
+A mobile-first Telegram bot for curated professional reading and active learning.
 
-## Current release: v0.4 — Smarter Curation
+## v0.5 — AI Discussion + Learning Notes
 
-- Railway-hosted Telegram bot
-- Railway Postgres persistence
-- Live article discovery from the three core publications
-- Article-specific "Why I picked this" reasoning
-- Topic-based personalization from 👍 / 👎 feedback
-- Publication diversity penalty so one source does not dominate
-- Fresh-discovery boost
-- Personalized recommendation queue
-- Saved reading list and recommendation history
-- `/topics` preference summary
-- Discussion-room starter
+The Brief now supports persistent article-linked discussion sessions.
 
-## Commands
+### New in v0.5
+- Tap **💬 Discuss** to start a conversation tied to one article
+- Normal Telegram messages continue that discussion
+- Conversation history persists in Postgres
+- The AI is instructed not to invent article details it cannot see
+- If article context is insufficient, it asks for the relevant excerpt
+- `/note` creates and saves a compact learning note
+- `/notes` shows recent saved learning notes
+- `/end` closes the active discussion
+- AI provider logic is isolated in `ai_provider.py`
 
-- `/start` — welcome screen
-- `/today` — next personalized recommendation
-- `/saved` — saved reading list
-- `/history` — recent recommendations
-- `/topics` — what The Brief is learning about your interests
-- `/refresh` — scan sources and refresh recommendation metadata
-- `/help` — command list
-
-## Recommendation buttons
-
-- 📖 Read Article
-- 🔖 Save
-- 👍 More Like This
-- 👎 Less Like This
-- 💬 Discuss
-
-## Railway variables
-
+### Railway variables
+Required:
 - `TELEGRAM_BOT_TOKEN`
 - `DATABASE_URL`
 
-The bot token must never be committed to GitHub.
+For AI discussion:
+- `OPENAI_API_KEY`
+- optional `OPENAI_MODEL` (defaults to `gpt-5.4-mini`)
+
+Never commit secrets to GitHub.
+
+### Important content behavior
+The bot does not bypass publication paywalls. Its AI discussion is grounded in the article metadata/context the app has access to plus anything the user shares in the discussion. When context is insufficient, it should ask for an excerpt instead of pretending to know the article.
