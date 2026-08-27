@@ -153,6 +153,50 @@ def upsert_article(article: dict) -> bool:
             return cur.fetchone() is not None
 
 
+def batch_upsert_articles(articles: list[dict]) -> int:
+    if not articles:
+        return 0
+
+    urls = [article["url"] for article in articles]
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT url FROM articles WHERE url = ANY(%s)",
+                (urls,),
+            )
+            existing = {row["url"] for row in cur.fetchall()}
+
+            cur.executemany(
+                """
+                INSERT INTO articles (
+                    title, publication, url, author, published_date, topic,
+                    summary, why_recommended, reading_time, recommendation_score
+                )
+                VALUES (
+                    %(title)s,%(publication)s,%(url)s,%(author)s,%(published_date)s,%(topic)s,
+                    %(summary)s,%(why_recommended)s,%(reading_time)s,%(recommendation_score)s
+                )
+                ON CONFLICT (url) DO UPDATE SET
+                    title=EXCLUDED.title,
+                    publication=EXCLUDED.publication,
+                    author=COALESCE(EXCLUDED.author, articles.author),
+                    published_date=COALESCE(EXCLUDED.published_date, articles.published_date),
+                    topic=EXCLUDED.topic,
+                    summary=CASE
+                        WHEN EXCLUDED.summary <> '' THEN EXCLUDED.summary
+                        ELSE articles.summary
+                    END,
+                    why_recommended=EXCLUDED.why_recommended,
+                    reading_time=EXCLUDED.reading_time,
+                    recommendation_score=EXCLUDED.recommendation_score
+                """,
+                articles,
+            )
+
+    return sum(1 for url in urls if url not in existing)
+
+
 def find_article_by_url(url: str):
     with get_connection() as conn:
         with conn.cursor() as cur:
