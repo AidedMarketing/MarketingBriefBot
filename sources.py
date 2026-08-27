@@ -303,15 +303,48 @@ def article_payload(source: dict, title: str, url: str, page: dict | None = None
     }
 
 
+def _source_for_publication(publication: str):
+    for source in SOURCES:
+        if source["name"] == publication:
+            return source
+    return None
+
+
 def _fetch_article_page(source: dict, title: str, url: str):
     try:
-        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=8.0) as client:
+        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=6.0) as client:
             response = client.get(url)
             response.raise_for_status()
             page = extract_article_page(source, response.text, url)
             return title, url, page, None
     except Exception as exc:
         return title, url, {}, type(exc).__name__
+
+
+def enrich_article(article: dict) -> bool:
+    source = _source_for_publication(article.get("publication"))
+    if not source:
+        return False
+
+    title, url, page, error = _fetch_article_page(
+        source,
+        article.get("title") or "Article",
+        article.get("url"),
+    )
+    if error or not page:
+        return False
+
+    upsert_article(article_payload(source, title, url, page))
+    save_article_content(
+        url=url,
+        source_type="public_web",
+        content_status=page["content_status"],
+        plain_text=page["plain_text"],
+        meta_description=page["meta_description"],
+        word_count=page["word_count"],
+        content_hash=page["content_hash"],
+    )
+    return True
 
 
 def refresh_sources(force: bool = True):
@@ -321,41 +354,53 @@ def refresh_sources(force: bool = True):
     errors = []
     candidates_all = []
 
-    # Homepage discovery stays sequential and cheap.
-    with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=8.0) as client:
+    # /refresh is primarily discovery. Keep this fast and predictable.
+    with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=6.0) as client:
         for source in SOURCES:
             try:
                 response = client.get(source["home"])
                 response.raise_for_status()
                 candidates = extract_candidates(source, response.text)
                 found += len(candidates)
+
+                # Store every discovered article immediately using headline-level metadata.
                 for title, url in candidates:
+                    if upsert_article(article_payload(source, title, url, {})):
+                        added += 1
                     candidates_all.append((source, title, url))
             except Exception as exc:
                 errors.append(f"{source['name']} homepage: {type(exc).__name__}")
 
-    # Deep article enrichment runs in parallel so /refresh doesn't take many minutes.
-    max_workers = min(8, max(1, len(candidates_all)))
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [
-            pool.submit(_fetch_article_page, source, title, url)
-            for source, title, url in candidates_all
-        ]
+    # Deep-reading every discovered URL made refresh take many minutes.
+    # Only a small front batch is enriched here; /today enriches the selected article on demand.
+    if force and candidates_all:
+        selected = []
+        per_source = {}
+        for item in candidates_all:
+            source = item[0]
+            count = per_source.get(source["name"], 0)
+            if count < 4:
+                selected.append(item)
+                per_source[source["name"]] = count + 1
 
-        source_by_url = {url: source for source, _, url in candidates_all}
+        with ThreadPoolExecutor(max_workers=min(6, len(selected))) as pool:
+            futures = [
+                pool.submit(_fetch_article_page, source, title, url)
+                for source, title, url in selected
+            ]
+            source_by_url = {url: source for source, _, url in selected}
 
-        for future in as_completed(futures):
-            title, url, page, error = future.result()
-            source = source_by_url[url]
+            for future in as_completed(futures):
+                title, url, page, error = future.result()
+                source = source_by_url[url]
+                if error:
+                    errors.append(f"{source['name']} article: {error}")
+                    continue
+                if not page:
+                    continue
 
-            if error:
-                errors.append(f"{source['name']} article: {error}")
-
-            if upsert_article(article_payload(source, title, url, page)):
-                added += 1
-
-            if page:
                 enriched += 1
+                upsert_article(article_payload(source, title, url, page))
                 save_article_content(
                     url=url,
                     source_type="public_web",
