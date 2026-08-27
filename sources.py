@@ -9,7 +9,7 @@ from database import upsert_article
 
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (compatible; MyMarketingBriefBot/0.2; "
+        "Mozilla/5.0 (compatible; MyMarketingBriefBot/0.4; "
         "+https://github.com/AidedMarketing/MarketingBriefBot)"
     )
 }
@@ -20,21 +20,18 @@ SOURCES = [
         "home": "https://hbr.org/",
         "allowed_host": "hbr.org",
         "path_patterns": ("/20", "/podcast/", "/video/"),
-        "why": "HBR is one of your core deep-reading sources for strategy, leadership, management, marketing, and career growth.",
     },
     {
         "name": "Marketing Brew",
         "home": "https://www.marketingbrew.com/",
         "allowed_host": "marketingbrew.com",
         "path_patterns": ("/stories/",),
-        "why": "Marketing Brew keeps the recommendation grounded in what marketers, brands, platforms, and agencies are doing right now.",
     },
     {
         "name": "MIT Sloan Management Review",
         "home": "https://sloanreview.mit.edu/",
         "allowed_host": "sloanreview.mit.edu",
         "path_patterns": ("/article/",),
-        "why": "MIT Sloan Management Review is the technology-and-management bridge in your reading stack, especially for AI, innovation, and digital strategy.",
     },
 ]
 
@@ -63,6 +60,20 @@ BASE_SCORE = {
     "MIT Sloan Management Review": 29,
 }
 
+TOPIC_WHY = {
+    "Strategy": "This strengthens strategic thinking — moving beyond execution into how companies compete, grow, position themselves, and make tradeoffs.",
+    "Marketing": "This is directly useful for sharpening your marketing judgment around brands, customers, channels, campaigns, and what is changing in the field.",
+    "Technology / AI": "This sits at the intersection of business and technology, helping build the AI and digital fluency that is increasingly valuable in modern marketing and management.",
+    "Leadership / Career": "This develops the management, communication, and career judgment that becomes more important as responsibility grows.",
+    "Business / Management": "This broadens business judgment beyond marketing and helps connect day-to-day work to how organizations actually operate.",
+}
+
+PUBLICATION_WHY = {
+    "Harvard Business Review": "HBR adds a deeper business and management lens.",
+    "Marketing Brew": "Marketing Brew adds a current, industry-facing lens.",
+    "MIT Sloan Management Review": "MIT Sloan adds a technology, innovation, and management lens.",
+}
+
 
 def classify(title: str):
     lowered = title.lower()
@@ -75,12 +86,30 @@ def classify(title: str):
     matches = scores[topic]
 
     if matches == 0:
-        if "Marketing Brew" in title:
-            topic = "Marketing"
-        else:
-            topic = "Business / Management"
+        topic = "Business / Management"
 
     return topic, matches
+
+
+def build_why(source_name: str, title: str, topic: str) -> str:
+    lowered = title.lower()
+    hooks = []
+
+    if "ai" in lowered or "artificial intelligence" in lowered:
+        hooks.append("It also gives you a concrete way to think about how AI is changing business decisions.")
+    if "brand" in lowered:
+        hooks.append("The brand angle makes it especially relevant to your marketing development.")
+    if "customer" in lowered or "consumer" in lowered:
+        hooks.append("The customer lens is useful for connecting marketing activity to actual behavior and value.")
+    if "leadership" in lowered or "manager" in lowered or "management" in lowered:
+        hooks.append("It is also a useful read-ahead topic for developing management judgment before you need it.")
+    if "strategy" in lowered or "strategic" in lowered:
+        hooks.append("The strategy angle helps build the habit of asking why a business choice works, not just how to execute it.")
+
+    core = TOPIC_WHY.get(topic, TOPIC_WHY["Business / Management"])
+    publication = PUBLICATION_WHY[source_name]
+    extra = f" {hooks[0]}" if hooks else ""
+    return f"{core} {publication}{extra}"
 
 
 def clean_title(text: str) -> str:
@@ -138,7 +167,6 @@ def article_payload(source: dict, title: str, url: str):
     topic, keyword_matches = classify(title)
     score = BASE_SCORE[source["name"]] + keyword_matches * 8
 
-    # Reward themes we specifically want to explore early in the reading habit.
     lowered = title.lower()
     priority_terms = (
         "strategy", "brand", "marketing", "customer", "ai",
@@ -154,7 +182,7 @@ def article_payload(source: dict, title: str, url: str):
         "published_date": None,
         "topic": topic,
         "summary": "",
-        "why_recommended": source["why"],
+        "why_recommended": build_why(source["name"], title, topic),
         "reading_time": 8 if source["name"] != "Marketing Brew" else 5,
         "recommendation_score": score,
     }
