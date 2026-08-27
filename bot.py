@@ -1,217 +1,444 @@
 import asyncio
+import io
 import os
+import re
 from html import escape
 
+import httpx
+from pypdf import PdfReader
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
-    Application, CallbackQueryHandler, CommandHandler,
-    ContextTypes, MessageHandler, filters,
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 from ai_provider import AIUnavailable, create_learning_note, discuss
 from database import (
-    add_discussion_message, end_discussion, get_active_discussion, get_article,
-    get_discussion_history, get_history, get_learning_notes, get_preference_summary,
-    get_saved_articles, get_today_article, init_db, record_activity,
-    save_learning_note, seed_test_article, start_discussion,
+    add_discussion_message,
+    append_import_text,
+    cancel_import,
+    end_discussion,
+    finish_import,
+    get_active_discussion,
+    get_article,
+    get_discussion_history,
+    get_history,
+    get_import_session,
+    get_learning_notes,
+    get_preference_summary,
+    get_saved_articles,
+    get_today_article,
+    init_db,
+    record_activity,
+    save_learning_note,
+    seed_test_article,
+    start_discussion,
+    start_import,
 )
+from importer import ingest_shared_url, source_for_url
 from sources import refresh_sources
 
-TOKEN=os.getenv("TELEGRAM_BOT_TOKEN")
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 
-def article_keyboard(article):
-    aid=article["id"]
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📖 Read Article",url=article["url"])],
-        [InlineKeyboardButton("🔖 Save",callback_data=f"save:{aid}"),
-         InlineKeyboardButton("👍 More Like This",callback_data=f"like:{aid}")],
-        [InlineKeyboardButton("👎 Less Like This",callback_data=f"dislike:{aid}"),
-         InlineKeyboardButton("💬 Discuss",callback_data=f"discuss:{aid}")],
-    ])
+def content_label(article: dict) -> str:
+    status = article.get("content_status") or "metadata_only"
+    if status == "full":
+        return "📄 Full article context"
+    if status == "partial":
+        return "📑 Partial article context"
+    return "🔐 Metadata only — import for full discussion"
 
 
-def format_article(article, heading="Today's Recommended Read"):
+def article_keyboard(article: dict) -> InlineKeyboardMarkup:
+    aid = article["id"]
+    rows = [
+        [InlineKeyboardButton("📖 Read Article", url=article["url"])],
+        [
+            InlineKeyboardButton("🔖 Save", callback_data=f"save:{aid}"),
+            InlineKeyboardButton("👍 More Like This", callback_data=f"like:{aid}"),
+        ],
+        [
+            InlineKeyboardButton("👎 Less Like This", callback_data=f"dislike:{aid}"),
+            InlineKeyboardButton("💬 Discuss", callback_data=f"discuss:{aid}"),
+        ],
+    ]
+    if (article.get("content_status") or "metadata_only") != "full":
+        rows.append([InlineKeyboardButton("📥 Import Article Context", callback_data=f"import:{aid}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def format_article(article: dict, heading: str = "Today's Recommended Read") -> str:
     return (
         f"📖 <b>{escape(heading)}</b>\n\n"
-        f"<b>{escape(article['title'])}</b>\n{escape(article['publication'])}\n\n"
+        f"<b>{escape(article['title'])}</b>\n"
+        f"{escape(article['publication'])}\n\n"
         f"🎯 <b>Why I picked this:</b>\n{escape(article['why_recommended'])}\n\n"
-        f"🏷 {escape(article['topic'])}\n⏱ ~{article['reading_time']} min read"
+        f"🏷 {escape(article['topic'])}\n"
+        f"⏱ ~{article['reading_time']} min read\n"
+        f"{escape(content_label(article))}"
     )
 
 
-async def start(update:Update, context:ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📚 Welcome to My Marketing Brief.\n\n"
-        "/today — Next recommended read\n/saved — Saved articles\n/history — Recent recommendations\n"
-        "/topics — Preference signals\n/notes — Learning notes\n/refresh — Find new articles\n"
-        "/end — End an active discussion\n/help — Commands"
+        "/today — Next recommended read\n"
+        "/saved — Saved articles\n"
+        "/history — Recent recommendations\n"
+        "/topics — Preference signals\n"
+        "/notes — Learning notes\n"
+        "/refresh — Find new articles\n"
+        "/finishimport — Finish an article import\n"
+        "/cancelimport — Cancel an article import\n"
+        "/end — End an active discussion\n"
+        "/help — Commands"
     )
 
 
-async def help_command(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    await start(update,context)
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await start(update, context)
 
 
-async def refresh_command(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    msg=await update.message.reply_text("🔎 Checking the publications now…")
-    result=await asyncio.to_thread(refresh_sources)
+async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("🔎 Checking and reading the publications now…")
+    result = await asyncio.to_thread(refresh_sources)
     await msg.edit_text(
-        f"✅ Refresh complete.\n\nFound {result['found']} candidates.\nAdded {result['added']} new articles.\n"
-        "Existing article metadata was refreshed too."
+        f"✅ Refresh complete.\n\n"
+        f"Found {result['found']} candidates.\n"
+        f"Added {result['added']} new articles.\n"
+        f"Enriched {result.get('enriched', 0)} article pages with context.\n\n"
+        "Send /today for your next recommendation."
     )
 
 
-async def today(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    uid=update.effective_user.id
-    await asyncio.to_thread(refresh_sources,False)
-    article=get_today_article(uid)
+async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    await asyncio.to_thread(refresh_sources, False)
+    article = get_today_article(uid)
     if not article:
         await update.message.reply_text("You've reached the end of the current queue. Try /refresh.")
         return
-    record_activity(article["id"],"delivered",uid)
-    await update.message.reply_text(format_article(article),parse_mode="HTML",reply_markup=article_keyboard(article))
+    record_activity(article["id"], "delivered", uid)
+    await update.message.reply_text(
+        format_article(article),
+        parse_mode="HTML",
+        reply_markup=article_keyboard(article),
+    )
 
 
-async def saved(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    rows=get_saved_articles(update.effective_user.id,10)
+async def saved(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    rows = get_saved_articles(update.effective_user.id, 10)
     if not rows:
         await update.message.reply_text("🔖 You haven't saved any articles yet.")
         return
-    text=["🔖 <b>Your Saved Reading</b>"]
-    for i,a in enumerate(rows,1):
-        text.append(f'{i}. <a href="{escape(a["url"],quote=True)}">{escape(a["title"])}</a>\n   {escape(a["publication"])} · {escape(a["topic"])}')
-    await update.message.reply_text("\n\n".join(text),parse_mode="HTML",disable_web_page_preview=True)
+    text = ["🔖 <b>Your Saved Reading</b>"]
+    for i, a in enumerate(rows, 1):
+        text.append(
+            f'{i}. <a href="{escape(a["url"], quote=True)}">{escape(a["title"])}</a>\n'
+            f'   {escape(a["publication"])} · {escape(a["topic"])}'
+        )
+    await update.message.reply_text(
+        "\n\n".join(text),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
 
 
-async def history(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    rows=get_history(update.effective_user.id,10)
+async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    rows = get_history(update.effective_user.id, 10)
     if not rows:
         await update.message.reply_text("📚 No recommendation history yet.")
         return
-    text=["📚 <b>Recent Recommendations</b>"]
-    for i,a in enumerate(rows,1):
-        text.append(f'{i}. <a href="{escape(a["url"],quote=True)}">{escape(a["title"])}</a>\n   {escape(a["publication"])} · {escape(a["topic"])}')
-    await update.message.reply_text("\n\n".join(text),parse_mode="HTML",disable_web_page_preview=True)
+    text = ["📚 <b>Recent Recommendations</b>"]
+    for i, a in enumerate(rows, 1):
+        text.append(
+            f'{i}. <a href="{escape(a["url"], quote=True)}">{escape(a["title"])}</a>\n'
+            f'   {escape(a["publication"])} · {escape(a["topic"])}'
+        )
+    await update.message.reply_text(
+        "\n\n".join(text),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
 
 
-async def topics(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    rows=get_preference_summary(update.effective_user.id)
+async def topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    rows = get_preference_summary(update.effective_user.id)
     if not rows:
         await update.message.reply_text("🧭 Use 👍 and 👎 on a few recommendations first.")
         return
-    lines=["🧭 <b>What The Brief Is Learning</b>"]
+    lines = ["🧭 <b>What The Brief Is Learning</b>"]
     for r in rows:
-        net=r["likes"]-r["dislikes"]
-        sig="↑" if net>0 else "↓" if net<0 else "→"
-        lines.append(f'{sig} <b>{escape(r["topic"])}</b> — {r["likes"]} 👍 · {r["dislikes"]} 👎')
-    await update.message.reply_text("\n".join(lines),parse_mode="HTML")
+        net = r["likes"] - r["dislikes"]
+        sig = "↑" if net > 0 else "↓" if net < 0 else "→"
+        lines.append(
+            f'{sig} <b>{escape(r["topic"])}</b> — {r["likes"]} 👍 · {r["dislikes"]} 👎'
+        )
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
-async def notes(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    rows=get_learning_notes(update.effective_user.id,10)
+async def notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    rows = get_learning_notes(update.effective_user.id, 10)
     if not rows:
-        await update.message.reply_text("📝 No learning notes yet. Start an article discussion and use /note.")
+        await update.message.reply_text("📝 No learning notes yet. Start a discussion and use /note.")
         return
-    lines=["📝 <b>Learning Notes</b>"]
-    for i,r in enumerate(rows,1):
+    lines = ["📝 <b>Learning Notes</b>"]
+    for i, r in enumerate(rows, 1):
         lines.append(f'{i}. <b>{escape(r["title"])}</b>\n{escape(r["note"])}')
-    await update.message.reply_text("\n\n".join(lines),parse_mode="HTML")
+    await update.message.reply_text("\n\n".join(lines), parse_mode="HTML")
 
 
-async def end_command(update:Update, context:ContextTypes.DEFAULT_TYPE):
+async def end_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     end_discussion(update.effective_user.id)
-    await update.message.reply_text("✅ Discussion closed. Use 💬 Discuss on any article to start another.")
+    await update.message.reply_text("✅ Discussion closed.")
 
 
-async def note_command(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    uid=update.effective_user.id
-    session=get_active_discussion(uid)
+async def note_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    session = get_active_discussion(uid)
     if not session:
-        await update.message.reply_text("There isn't an active discussion. Tap 💬 Discuss on an article first.")
+        await update.message.reply_text("There isn't an active discussion. Tap 💬 Discuss first.")
         return
-    history=get_discussion_history(uid,session["id"])
-    if not history:
+    history_rows = get_discussion_history(uid, session["id"])
+    if not history_rows:
         await update.message.reply_text("Talk through the article with me first, then use /note.")
         return
     try:
-        note=await asyncio.to_thread(create_learning_note,session,history)
-    except (AIUnavailable, httpx.HTTPError) as exc:
-        await update.message.reply_text("I couldn't create the note right now. Check the AI configuration in Railway.")
+        note = await asyncio.to_thread(create_learning_note, session, history_rows)
+    except (AIUnavailable, httpx.HTTPError):
+        await update.message.reply_text("I couldn't create the note right now.")
         return
-    save_learning_note(uid,session["id"],note)
-    await update.message.reply_text(f"📝 <b>Learning Note Saved</b>\n\n{escape(note)}",parse_mode="HTML")
+    save_learning_note(uid, session["id"], note)
+    await update.message.reply_text(
+        f"📝 <b>Learning Note Saved</b>\n\n{escape(note)}",
+        parse_mode="HTML",
+    )
 
 
-async def article_action(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    q=update.callback_query
-    action,aid_text=q.data.split(":",1)
-    aid=int(aid_text)
-    uid=update.effective_user.id
-    article=get_article(aid)
+async def finish_import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    article = finish_import(update.effective_user.id)
     if not article:
-        await q.answer("Article not found.",show_alert=True)
+        await update.message.reply_text("There isn't an active article import.")
         return
-    if action=="save":
-        record_activity(aid,"saved",uid,True); await q.answer("Saved 🔖"); return
-    if action=="like":
-        record_activity(aid,"liked",uid,True); await q.answer("More like this 👍"); return
-    if action=="dislike":
-        record_activity(aid,"disliked",uid,True); await q.answer("Weighted down 👎"); return
-    if action=="discuss":
-        record_activity(aid,"discussed",uid,True)
-        start_discussion(uid,aid)
+    await update.message.reply_text(
+        "✅ <b>Article context imported</b>\n\n"
+        f"<b>{escape(article['title'])}</b>\n"
+        f"{escape(content_label(article))}\n"
+        f"🧾 {article.get('word_count') or 0:,} words\n\n"
+        "You can now tap 💬 Discuss on this article for a grounded conversation.",
+        parse_mode="HTML",
+    )
+
+
+async def cancel_import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cancel_import(update.effective_user.id)
+    await update.message.reply_text("Import cancelled.")
+
+
+async def article_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    action, aid_text = q.data.split(":", 1)
+    aid = int(aid_text)
+    uid = update.effective_user.id
+    article = get_article(aid)
+
+    if not article:
+        await q.answer("Article not found.", show_alert=True)
+        return
+
+    if action == "save":
+        record_activity(aid, "saved", uid, True)
+        await q.answer("Saved 🔖")
+        return
+    if action == "like":
+        record_activity(aid, "liked", uid, True)
+        await q.answer("More like this 👍")
+        return
+    if action == "dislike":
+        record_activity(aid, "disliked", uid, True)
+        await q.answer("Weighted down 👎")
+        return
+    if action == "import":
+        start_import(uid, aid)
         await q.answer()
         await q.message.reply_text(
-            "💬 <b>Discussion started</b>\n\n"
+            "📥 <b>Article Import Started</b>\n\n"
             f"<b>{escape(article['title'])}</b>\n\n"
-            "Send me your reaction, a question, or a passage you want to unpack. "
-            "I'll stay tied to this article until you use /end.\n\n"
-            "Use /note anytime after we've discussed it to save a learning note.",
-            parse_mode="HTML"
+            "Paste the article text here, or upload a text-based PDF from your subscriber access. "
+            "You can send multiple text messages.\n\n"
+            "When you're done, send /finishimport.\n"
+            "Use /cancelimport to stop.",
+            parse_mode="HTML",
+        )
+        return
+    if action == "discuss":
+        record_activity(aid, "discussed", uid, True)
+        start_discussion(uid, aid)
+        await q.answer()
+        status = article.get("content_status") or "metadata_only"
+        grounding = (
+            "I have full article context."
+            if status == "full"
+            else "I only have partial context."
+            if status == "partial"
+            else "I only have metadata right now. Import the article for article-specific analysis."
+        )
+        await q.message.reply_text(
+            "💬 <b>Discussion started</b>\n\n"
+            f"<b>{escape(article['title'])}</b>\n"
+            f"{escape(grounding)}\n\n"
+            "Send your reaction or question. I'll stay tied to this article until /end.",
+            parse_mode="HTML",
         )
 
 
-async def discussion_message(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    uid=update.effective_user.id
-    session=get_active_discussion(uid)
+async def document_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    session = get_import_session(uid)
     if not session:
+        await update.message.reply_text(
+            "I received a file, but there isn't an active import. "
+            "Share an HBR link or tap 📥 Import Article Context first."
+        )
         return
-    user_text=update.message.text.strip()
+
+    document = update.message.document
+    tg_file = await context.bot.get_file(document.file_id)
+    data = bytes(await tg_file.download_as_bytearray())
+    filename = (document.file_name or "").lower()
+    mime = document.mime_type or ""
+
+    try:
+        if filename.endswith(".pdf") or mime == "application/pdf":
+            reader = PdfReader(io.BytesIO(data))
+            pages = [(page.extract_text() or "").strip() for page in reader.pages]
+            text = "\n\n".join(p for p in pages if p)
+            source_type = "user_pdf"
+        elif filename.endswith(".txt") or mime.startswith("text/"):
+            text = data.decode("utf-8", errors="replace")
+            source_type = "user_file"
+        else:
+            await update.message.reply_text("For now I can import PDF or plain-text files.")
+            return
+    except Exception:
+        await update.message.reply_text("I couldn't extract readable text from that file.")
+        return
+
+    if len(text.split()) < 20:
+        await update.message.reply_text(
+            "I couldn't find enough readable text in that file. "
+            "If it's a scanned/image PDF, paste the article text instead."
+        )
+        return
+
+    append_import_text(uid, text)
+    article = finish_import(uid, source_type=source_type)
+    await update.message.reply_text(
+        "✅ <b>Article imported from file</b>\n\n"
+        f"{escape(content_label(article))}\n"
+        f"🧾 {article.get('word_count') or 0:,} words\n\n"
+        "The Brief can now use this context during discussion.",
+        parse_mode="HTML",
+    )
+
+
+async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    user_text = update.message.text.strip()
     if not user_text:
         return
-    add_discussion_message(uid,session["id"],"user",user_text)
-    history=get_discussion_history(uid,session["id"])
-    await update.message.chat.send_action("typing")
-    try:
-        answer=await asyncio.to_thread(discuss,session,history[:-1],user_text)
-    except Exception:
+
+    urls = re.findall(r"https?://[^\s<>]+", user_text)
+    for raw_url in urls:
+        if source_for_url(raw_url):
+            try:
+                article = await asyncio.to_thread(ingest_shared_url, raw_url.rstrip(".,)"))
+            except Exception:
+                article = None
+            if article:
+                status = article.get("content_status") or "metadata_only"
+                if article["publication"] == "Harvard Business Review" and status != "full":
+                    start_import(uid, article["id"])
+                    await update.message.reply_text(
+                        "🔐 <b>HBR article recognized</b>\n\n"
+                        f"<b>{escape(article['title'])}</b>\n"
+                        f"{escape(content_label(article))}\n\n"
+                        "Your HBR subscription stays private in HBR. To give The Brief the subscriber text, "
+                        "paste the article text here or upload a text-based PDF, then use /finishimport.",
+                        parse_mode="HTML",
+                    )
+                else:
+                    await update.message.reply_text(
+                        "🔗 <b>Article recognized</b>\n\n"
+                        f"<b>{escape(article['title'])}</b>\n"
+                        f"{escape(content_label(article))}",
+                        parse_mode="HTML",
+                        reply_markup=article_keyboard(article),
+                    )
+                return
+
+    import_session = get_import_session(uid)
+    if import_session:
+        append_import_text(uid, user_text)
+        current_words = len(user_text.split())
         await update.message.reply_text(
-            "I couldn't reach the discussion model. If this is the first v0.5 test, "
-            "make sure OPENAI_API_KEY is set in Railway."
+            f"📥 Added {current_words:,} words to the import. "
+            "Send more text or /finishimport when you're done."
         )
         return
-    add_discussion_message(uid,session["id"],"assistant",answer)
+
+    session = get_active_discussion(uid)
+    if not session:
+        return
+
+    add_discussion_message(uid, session["id"], "user", user_text)
+    history_rows = get_discussion_history(uid, session["id"])
+    await update.message.chat.send_action("typing")
+    try:
+        answer = await asyncio.to_thread(discuss, session, history_rows[:-1], user_text)
+    except Exception:
+        await update.message.reply_text("I couldn't reach the discussion model right now.")
+        return
+    add_discussion_message(uid, session["id"], "assistant", answer)
     await update.message.reply_text(answer)
 
 
 def main():
     if not TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured.")
-    init_db(); seed_test_article()
-    app=Application.builder().token(TOKEN).build()
-    for cmd,fn in [
-        ("start",start),("help",help_command),("today",today),("saved",saved),
-        ("history",history),("topics",topics),("notes",notes),("refresh",refresh_command),
-        ("end",end_command),("note",note_command)
+
+    init_db()
+    seed_test_article()
+
+    app = Application.builder().token(TOKEN).build()
+    for cmd, fn in [
+        ("start", start),
+        ("help", help_command),
+        ("today", today),
+        ("saved", saved),
+        ("history", history),
+        ("topics", topics),
+        ("notes", notes),
+        ("refresh", refresh_command),
+        ("end", end_command),
+        ("note", note_command),
+        ("finishimport", finish_import_command),
+        ("cancelimport", cancel_import_command),
     ]:
-        app.add_handler(CommandHandler(cmd,fn))
+        app.add_handler(CommandHandler(cmd, fn))
+
     app.add_handler(CallbackQueryHandler(article_action))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,discussion_message))
-    print("My Marketing Brief v0.5 is running...",flush=True)
+    app.add_handler(MessageHandler(filters.Document.ALL, document_import))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
+
+    print("My Marketing Brief v0.6 is running...", flush=True)
     app.run_polling()
 
 
-if __name__=="__main__":
-    import httpx
+if __name__ == "__main__":
     main()
