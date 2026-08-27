@@ -148,7 +148,7 @@ def extract_candidates(source: dict, html: str):
     return candidates[:30]
 
 
-def extract_article_page(source: dict, html: str):
+def extract_article_page(source: dict, html: str, url: str = ""):
     soup = BeautifulSoup(html, "html.parser")
 
     meta = soup.find("meta", attrs={"name": "description"})
@@ -156,16 +156,47 @@ def extract_article_page(source: dict, html: str):
         meta = soup.find("meta", attrs={"property": "og:description"})
     description = clean_title(meta.get("content", "")) if meta else ""
 
-    containers = soup.find_all("article")
-    root = containers[0] if containers else soup
-    paragraphs = []
-    for p in root.find_all("p"):
-        text = clean_title(p.get_text(" ", strip=True))
-        if len(text) >= 40:
-            paragraphs.append(text)
+    # Prefer the semantic article/main container so navigation and footer text do not
+    # inflate our confidence score.
+    root = soup.find("article") or soup.find("main") or soup
 
-    body = "\n\n".join(paragraphs)
+    # Preserve article structure instead of collecting only <p> elements.
+    # This fixes checklist/list sections such as HBR's "Bringing It to Life".
+    blocks = []
+    seen = set()
+    heading_count = 0
+    list_item_count = 0
+
+    for node in root.find_all(["h2", "h3", "h4", "p", "li", "blockquote"]):
+        text = clean_title(node.get_text(" ", strip=True))
+        if not text:
+            continue
+
+        tag = node.name.lower()
+        minimum = 4 if tag in ("h2", "h3", "h4", "li") else 25
+        if len(text) < minimum:
+            continue
+
+        # Avoid duplicate text caused by nested markup.
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        if tag in ("h2", "h3", "h4"):
+            heading_count += 1
+            blocks.append(f"\n## {text}\n")
+        elif tag == "li":
+            list_item_count += 1
+            blocks.append(f"- {text}")
+        elif tag == "blockquote":
+            blocks.append(f"> {text}")
+        else:
+            blocks.append(text)
+
+    body = "\n\n".join(blocks).strip()
     word_count = len(body.split())
+    block_count = len(blocks)
 
     page_text = soup.get_text(" ", strip=True).lower()
     paywall_signal = any(
@@ -176,10 +207,48 @@ def extract_article_page(source: dict, html: str):
             "subscriber exclusive",
             "you have reached your limit",
             "sign in to continue",
+            "register to continue",
         )
     )
 
-    if word_count >= 350 and not paywall_signal:
+    # Source-aware completeness checks. Word count alone must never mean "full".
+    parsed_path = urlparse(url).path.lower() if url else ""
+    is_hbr_sponsored = (
+        source["name"] == "Harvard Business Review"
+        and "/sponsored/" in parsed_path
+    )
+
+    # HBR sponsored articles expose their full editorial body publicly; an ending
+    # disclosure/author section is a strong completion marker.
+    hbr_completion_signal = any(
+        marker in page_text
+        for marker in (
+            "the views reflected in this article",
+            "also contributed to this article",
+            "learn more about how the",
+        )
+    )
+
+    # For normal article pages, require meaningful structure and a substantial body.
+    structural_complete = (
+        word_count >= 450
+        and block_count >= 10
+        and (heading_count >= 1 or list_item_count >= 3)
+    )
+
+    if paywall_signal:
+        status = "partial" if (word_count >= 60 or description) else "metadata_only"
+    elif is_hbr_sponsored and structural_complete and hbr_completion_signal:
+        status = "full"
+    elif source["name"] == "Marketing Brew" and structural_complete:
+        status = "full"
+    elif source["name"] == "MIT Sloan Management Review" and structural_complete:
+        status = "full"
+    elif source["name"] == "Harvard Business Review":
+        # Regular HBR pages are deliberately conservative. If we cannot prove that
+        # we reached the article boundary, call it partial rather than overclaiming.
+        status = "partial" if (word_count >= 60 or description) else "metadata_only"
+    elif structural_complete:
         status = "full"
     elif word_count >= 60 or description:
         status = "partial"
@@ -192,6 +261,9 @@ def extract_article_page(source: dict, html: str):
         "word_count": word_count,
         "content_status": status,
         "content_hash": hashlib.sha256(body.encode("utf-8")).hexdigest() if body else None,
+        "block_count": block_count,
+        "heading_count": heading_count,
+        "list_item_count": list_item_count,
     }
 
 
@@ -250,7 +322,7 @@ def refresh_sources(force: bool = True):
                     try:
                         article_response = client.get(url)
                         article_response.raise_for_status()
-                        page = extract_article_page(source, article_response.text)
+                        page = extract_article_page(source, article_response.text, url)
                         enriched += 1
                     except Exception:
                         page = {}
