@@ -49,8 +49,21 @@ def init_db() -> None:
                         REFERENCES articles(id)
                         ON DELETE CASCADE,
                     action TEXT NOT NULL,
+                    user_id BIGINT,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE activity
+                ADD COLUMN IF NOT EXISTS user_id BIGINT
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_activity_user_action
+                ON activity(user_id, action)
                 """
             )
 
@@ -105,18 +118,118 @@ def upsert_article(article: dict) -> bool:
             return cur.fetchone() is not None
 
 
-def get_today_article():
+def record_activity(article_id: int, action: str, user_id: int, dedupe: bool = False) -> None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            if dedupe:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM activity
+                    WHERE article_id = %s
+                      AND action = %s
+                      AND user_id = %s
+                    LIMIT 1
+                    """,
+                    (article_id, action, user_id),
+                )
+                if cur.fetchone():
+                    return
+
+            cur.execute(
+                """
+                INSERT INTO activity (article_id, action, user_id)
+                VALUES (%s, %s, %s)
+                """,
+                (article_id, action, user_id),
+            )
+
+
+def get_article(article_id: int):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM articles WHERE id = %s", (article_id,))
+            return cur.fetchone()
+
+
+def get_today_article(user_id: int):
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT *
-                FROM articles
+                WITH preferences AS (
+                    SELECT
+                        a.topic,
+                        COALESCE(SUM(
+                            CASE
+                                WHEN act.action = 'liked' THEN 12
+                                WHEN act.action = 'disliked' THEN -12
+                                ELSE 0
+                            END
+                        ), 0) AS topic_boost
+                    FROM articles a
+                    JOIN activity act ON act.article_id = a.id
+                    WHERE act.user_id = %s
+                    GROUP BY a.topic
+                )
+                SELECT
+                    a.*,
+                    a.recommendation_score + COALESCE(p.topic_boost, 0)
+                        AS personalized_score
+                FROM articles a
+                LEFT JOIN preferences p ON p.topic = a.topic
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM activity seen
+                    WHERE seen.article_id = a.id
+                      AND seen.user_id = %s
+                      AND seen.action = 'delivered'
+                )
                 ORDER BY
-                    recommendation_score DESC,
-                    discovered_date DESC,
-                    id DESC
+                    personalized_score DESC,
+                    a.discovered_date DESC,
+                    a.id DESC
                 LIMIT 1
-                """
+                """,
+                (user_id, user_id),
             )
             return cur.fetchone()
+
+
+def get_saved_articles(user_id: int, limit: int = 10):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT ON (a.id)
+                    a.*
+                FROM articles a
+                JOIN activity act ON act.article_id = a.id
+                WHERE act.user_id = %s
+                  AND act.action = 'saved'
+                ORDER BY a.id, act.created_at DESC
+                """,
+                (user_id,),
+            )
+            rows = cur.fetchall()
+            return list(reversed(rows[-limit:]))
+
+
+def get_history(user_id: int, limit: int = 10):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT ON (a.id)
+                    a.*, act.created_at AS delivered_at
+                FROM articles a
+                JOIN activity act ON act.article_id = a.id
+                WHERE act.user_id = %s
+                  AND act.action = 'delivered'
+                ORDER BY a.id, act.created_at DESC
+                """,
+                (user_id,),
+            )
+            rows = cur.fetchall()
+            rows.sort(key=lambda row: row["delivered_at"], reverse=True)
+            return rows[:limit]
