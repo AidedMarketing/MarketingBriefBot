@@ -166,15 +166,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔎 Checking and reading the publications now…")
     try:
-        result = await asyncio.wait_for(asyncio.to_thread(refresh_sources), timeout=45)
+        result = await asyncio.wait_for(asyncio.to_thread(refresh_sources), timeout=20)
     except asyncio.TimeoutError:
-        await msg.edit_text("⚠️ Refresh exceeded 45 seconds and was stopped. The bot is still online; /today can continue using the existing queue.")
+        await msg.edit_text("⚠️ Refresh exceeded 20 seconds and was stopped. The bot is still online; /today can continue using the existing queue.")
         return
     await msg.edit_text(
         f"✅ Refresh complete.\n\n"
         f"Found {result['found']} candidates.\n"
         f"Added {result['added']} new articles.\n"
-        f"Enriched {result.get('enriched', 0)} article pages with context.\n\n"
+        "Discovery refresh completed. Article text will be loaded when selected by /today.\n\n"
         "Send /today for your next recommendation."
     )
 
