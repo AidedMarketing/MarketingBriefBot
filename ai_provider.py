@@ -4,7 +4,7 @@ from typing import Iterable
 import httpx
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 OPENAI_URL = "https://api.openai.com/v1/responses"
 
 
@@ -28,13 +28,36 @@ def _extract_output_text(payload: dict) -> str:
 
 
 def _article_context(article: dict) -> str:
-    summary = (article.get("summary") or "").strip()
+    status = article.get("content_status") or "metadata_only"
+    description = (article.get("meta_description") or article.get("summary") or "").strip()
+    body = (article.get("plain_text") or "").strip()
+
+    if status == "full":
+        context_rule = "FULL CONTEXT: You may attribute claims to the article when supported by the supplied text."
+    elif status == "partial":
+        context_rule = (
+            "PARTIAL CONTEXT: Only attribute claims that appear in the supplied excerpt/metadata. "
+            "Do not present inferred themes as the article's argument."
+        )
+    else:
+        context_rule = (
+            "METADATA ONLY: Do not say 'the article argues', 'the article says', 'the core lesson is', "
+            "or otherwise attribute substantive claims to the article. You may discuss the topic generally, "
+            "but label that clearly as topic-level analysis. Ask for an excerpt/import when article-specific analysis is requested."
+        )
+
+    # Keep prompts economical while still supplying a substantial article context.
+    body_for_model = body[:30000]
+
     return (
         f"Title: {article['title']}\n"
         f"Publication: {article['publication']}\n"
         f"Topic: {article['topic']}\n"
         f"URL: {article['url']}\n"
-        f"Available article context: {summary or 'No article body is available. Do not pretend to know details beyond the title and metadata.'}"
+        f"Content status: {status}\n"
+        f"Grounding rule: {context_rule}\n"
+        f"Description: {description or '(none)'}\n"
+        f"Article text/excerpt:\n{body_for_model or '(none)'}"
     )
 
 
@@ -75,10 +98,11 @@ def discuss(article: dict, history: list[dict], user_message: str) -> str:
     instructions = (
         "You are The Brief, a thoughtful professional-reading discussion partner. "
         "Help the user learn business, marketing, strategy, leadership, and technology through the selected article. "
-        "Be concise but substantive. Do not simply agree: test assumptions, explain unfamiliar concepts, connect ideas to practical work, "
-        "and ask at most one useful follow-up question when it advances learning. "
-        "Never claim to have read details that are not present in the supplied article context. "
-        "If the user asks about a passage or claim not represented in context, ask them to paste that excerpt. "
+        "Be concise but substantive. Test assumptions, explain unfamiliar concepts, and connect ideas to practical work. "
+        "Ground article-specific claims only in the supplied context. "
+        "If context is partial or metadata-only, explicitly distinguish article-grounded observations from general topic analysis. "
+        "Never invent an article's thesis, examples, evidence, or conclusions. "
+        "If deeper article-specific analysis requires missing text, ask the user to import or paste the relevant passage. "
         "Do not reproduce long copyrighted passages."
     )
     prompt = (
@@ -93,8 +117,8 @@ def create_learning_note(article: dict, history: list[dict]) -> str:
     instructions = (
         "Create a compact learning note from a professional-reading discussion. "
         "Use exactly three short sections: Key idea, My takeaway, Application. "
-        "Base it only on the supplied article context and discussion. "
-        "Do not invent claims from the article."
+        "Base article-specific claims only on supplied article context and the user's discussion. "
+        "If the article context is partial, preserve that uncertainty. Do not invent claims."
     )
     prompt = (
         f"ARTICLE\n{_article_context(article)}\n\n"
