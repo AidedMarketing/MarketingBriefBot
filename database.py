@@ -99,6 +99,27 @@ def upsert_article(article: dict) -> bool:
         with conn.cursor() as cur:
             cur.execute(
                 """
+                UPDATE articles
+                SET
+                    title = %(title)s,
+                    publication = %(publication)s,
+                    author = COALESCE(%(author)s, author),
+                    published_date = COALESCE(%(published_date)s, published_date),
+                    topic = %(topic)s,
+                    summary = %(summary)s,
+                    why_recommended = %(why_recommended)s,
+                    reading_time = %(reading_time)s,
+                    recommendation_score = %(recommendation_score)s
+                WHERE url = %(url)s
+                RETURNING id
+                """,
+                article,
+            )
+            if cur.fetchone():
+                return False
+
+            cur.execute(
+                """
                 INSERT INTO articles (
                     title, publication, url, author, published_date,
                     topic, summary, why_recommended, reading_time,
@@ -110,7 +131,6 @@ def upsert_article(article: dict) -> bool:
                     %(why_recommended)s, %(reading_time)s,
                     %(recommendation_score)s
                 )
-                ON CONFLICT (url) DO NOTHING
                 RETURNING id
                 """,
                 article,
@@ -157,7 +177,7 @@ def get_today_article(user_id: int):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                WITH preferences AS (
+                WITH topic_preferences AS (
                     SELECT
                         a.topic,
                         COALESCE(SUM(
@@ -171,13 +191,35 @@ def get_today_article(user_id: int):
                     JOIN activity act ON act.article_id = a.id
                     WHERE act.user_id = %s
                     GROUP BY a.topic
+                ),
+                recent_deliveries AS (
+                    SELECT publication, COUNT(*) AS recent_count
+                    FROM (
+                        SELECT a.publication
+                        FROM activity act
+                        JOIN articles a ON a.id = act.article_id
+                        WHERE act.user_id = %s
+                          AND act.action = 'delivered'
+                        ORDER BY act.created_at DESC
+                        LIMIT 6
+                    ) recent
+                    GROUP BY publication
                 )
                 SELECT
                     a.*,
-                    a.recommendation_score + COALESCE(p.topic_boost, 0)
-                        AS personalized_score
+                    (
+                        a.recommendation_score
+                        + COALESCE(tp.topic_boost, 0)
+                        - COALESCE(rd.recent_count, 0) * 14
+                        + CASE
+                            WHEN a.discovered_date > NOW() - INTERVAL '2 days' THEN 8
+                            WHEN a.discovered_date > NOW() - INTERVAL '7 days' THEN 4
+                            ELSE 0
+                          END
+                    ) AS personalized_score
                 FROM articles a
-                LEFT JOIN preferences p ON p.topic = a.topic
+                LEFT JOIN topic_preferences tp ON tp.topic = a.topic
+                LEFT JOIN recent_deliveries rd ON rd.publication = a.publication
                 WHERE NOT EXISTS (
                     SELECT 1
                     FROM activity seen
@@ -191,7 +233,7 @@ def get_today_article(user_id: int):
                     a.id DESC
                 LIMIT 1
                 """,
-                (user_id, user_id),
+                (user_id, user_id, user_id),
             )
             return cur.fetchone()
 
@@ -233,3 +275,26 @@ def get_history(user_id: int, limit: int = 10):
             rows = cur.fetchall()
             rows.sort(key=lambda row: row["delivered_at"], reverse=True)
             return rows[:limit]
+
+
+def get_preference_summary(user_id: int):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    a.topic,
+                    SUM(CASE WHEN act.action = 'liked' THEN 1 ELSE 0 END) AS likes,
+                    SUM(CASE WHEN act.action = 'disliked' THEN 1 ELSE 0 END) AS dislikes
+                FROM activity act
+                JOIN articles a ON a.id = act.article_id
+                WHERE act.user_id = %s
+                  AND act.action IN ('liked', 'disliked')
+                GROUP BY a.topic
+                ORDER BY (SUM(CASE WHEN act.action = 'liked' THEN 1 ELSE 0 END)
+                         - SUM(CASE WHEN act.action = 'disliked' THEN 1 ELSE 0 END)) DESC,
+                         a.topic
+                """,
+                (user_id,),
+            )
+            return cur.fetchall()
