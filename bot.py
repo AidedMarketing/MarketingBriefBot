@@ -165,7 +165,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔎 Checking and reading the publications now…")
-    result = await asyncio.to_thread(refresh_sources)
+    try:
+        result = await asyncio.wait_for(asyncio.to_thread(refresh_sources), timeout=90)
+    except asyncio.TimeoutError:
+        await msg.edit_text("⚠️ Refresh took too long and was stopped. The bot is still online; try /today or run /refresh again later.")
+        return
     await msg.edit_text(
         f"✅ Refresh complete.\n\n"
         f"Found {result['found']} candidates.\n"
