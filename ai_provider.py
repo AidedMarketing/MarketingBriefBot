@@ -137,8 +137,9 @@ def _article_context(article: dict, user_message: str = "") -> str:
         )
     elif status == "partial":
         context_rule = (
-            "PARTIAL CONTEXT: Only attribute claims that appear in the supplied excerpt/metadata. "
-            "Do not present inferred themes as the article's argument."
+            "PARTIAL CONTEXT: Use the supplied article text plus any reader-supplied excerpts as grounded context. "
+            "Answer normally when the user's question is supported by that material. Only mention the limitation when missing context "
+            "actually prevents a reliable article-specific answer. Do not present inferred themes as the article's argument."
         )
     else:
         context_rule = (
@@ -149,6 +150,15 @@ def _article_context(article: dict, user_message: str = "") -> str:
 
     body_for_model = _select_article_context(body, user_message)
 
+    reader_excerpts = article.get("reader_excerpts") or []
+    excerpt_text = ""
+    if reader_excerpts:
+        excerpt_blocks = []
+        for idx, excerpt in enumerate(reader_excerpts, start=1):
+            text_value = excerpt["excerpt_text"] if isinstance(excerpt, dict) else str(excerpt)
+            excerpt_blocks.append(f"[Reader excerpt {idx}]\n{text_value}")
+        excerpt_text = "\n\n".join(excerpt_blocks)
+
     return (
         f"Title: {article['title']}\n"
         f"Publication: {article['publication']}\n"
@@ -158,7 +168,8 @@ def _article_context(article: dict, user_message: str = "") -> str:
         f"Stored word count: {article.get('word_count') or 0}\n"
         f"Grounding rule: {context_rule}\n"
         f"Description: {description or '(none)'}\n"
-        f"Article text/context:\n{body_for_model or '(none)'}"
+        f"Article text/context:\n{body_for_model or '(none)'}\n\n"
+        f"Reader-supplied excerpts:\n{excerpt_text or '(none)'}"
     )
 
 
@@ -202,7 +213,8 @@ def discuss(article: dict, history: list[dict], user_message: str) -> str:
         "Help the user learn business, marketing, strategy, leadership, and technology through the selected article. "
         "Be concise but substantive. Test assumptions, explain unfamiliar concepts, and connect ideas to practical work. "
         "Ground article-specific claims only in the supplied context. "
-        "If context is partial or metadata-only, distinguish article-grounded observations from general topic analysis. "
+        "If context is metadata-only, distinguish article-grounded observations from general topic analysis. "
+        "If context is partial, do not repeatedly warn about partial access; mention it only when it matters to the question. "
         "Never invent an article's thesis, examples, evidence, or conclusions. "
         "If deeper article-specific analysis requires missing text, ask the user to import or paste the relevant passage. "
         "Do not reproduce long copyrighted passages."
