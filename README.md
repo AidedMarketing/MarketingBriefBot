@@ -47,3 +47,12 @@ The bot does not bypass subscription authentication or redistribute full article
 - `DATABASE_URL`
 - `OPENAI_API_KEY`
 - optional `OPENAI_MODEL` (recommended: `gpt-5.6-luna`)
+
+
+## v0.6.1 — Extraction Integrity
+
+- Article extraction now preserves headings, lists, blockquotes, and paragraphs in document order.
+- Word count alone can no longer mark an article as full.
+- HBR completeness is deliberately conservative.
+- Public HBR sponsored content uses structural + end-of-article signals before receiving a full-context label.
+- The regression case for the Fiserv/EY-Parthenon article now captures the "Bringing It to Life" checklist rather than stopping before the list.
