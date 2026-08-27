@@ -436,6 +436,8 @@ def record_activity(article_id: int, action: str, user_id: int, dedupe: bool = F
                 (article_id, action, user_id)
             )
 
+    update_learning_memory(user_id, article_id, action)
+
 
 def get_article(article_id: int):
     with get_connection() as conn:
