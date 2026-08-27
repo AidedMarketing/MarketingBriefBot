@@ -79,3 +79,15 @@ The bot does not bypass subscription authentication or redistribute full article
 - `/debugarticle` now reports reader-excerpt count alongside stored article diagnostics.
 - Sharing an HBR link no longer automatically forces a formal import session; you can read in HBR, discuss in Telegram, and paste only the section that matters.
 - The full PDF/text import workflow remains available as an optional fallback.
+
+
+## v0.8 — Guided Learning Loop
+
+- Added a **Reading Lens** button to recommendation cards for a short pre-reading guide.
+- Discussion sessions now include guided actions:
+  - **Key Ideas** — distills the highest-value concepts.
+  - **Apply It** — converts ideas into practical marketing/business/career application.
+  - **Challenge Me** — asks one comprehension/critical-thinking question.
+  - **Save Note** — creates and stores a learning note from the discussion.
+- Guided actions use the same full/partial/reader-supplied context rules as normal conversation.
+- Guided outputs are recorded in discussion history so the learning conversation can continue naturally.
