@@ -56,3 +56,14 @@ The bot does not bypass subscription authentication or redistribute full article
 - HBR completeness is deliberately conservative.
 - Public HBR sponsored content uses structural + end-of-article signals before receiving a full-context label.
 - The regression case for the Fiserv/EY-Parthenon article now captures the "Bringing It to Life" checklist rather than stopping before the list.
+
+
+## v0.6.2 — Context Recall
+
+- Removed the old 30,000-character first-half clipping behavior.
+- Normal-length articles are now sent to Luna in full.
+- Longer articles use query-aware chunk retrieval.
+- The beginning and final sections are always included for long articles.
+- Exact user phrases/keywords pull the matching article chunk plus neighboring context.
+- Public, non-paywalled JSON-LD `articleBody` is used when it is materially more complete than DOM extraction.
+- Luna is no longer allowed to treat an omitted retrieval chunk as proof that the article itself never mentioned something.
