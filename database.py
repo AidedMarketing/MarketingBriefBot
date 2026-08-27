@@ -1,3 +1,4 @@
+import hashlib
 import os
 
 import psycopg
@@ -44,6 +45,22 @@ def init_db() -> None:
                     content_hash TEXT,
                     fetched_at TIMESTAMPTZ DEFAULT NOW()
                 )
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS reader_excerpts (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    article_id BIGINT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+                    excerpt_text TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(user_id, article_id, content_hash)
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_reader_excerpts_user_article
+                ON reader_excerpts(user_id, article_id, created_at)
             """)
 
             cur.execute("""
@@ -378,6 +395,60 @@ def get_preference_summary(user_id: int):
                 ) DESC, a.topic
             """,(user_id,))
             return cur.fetchall()
+
+
+def add_reader_excerpt(user_id: int, article_id: int, excerpt_text: str) -> bool:
+    text = (excerpt_text or "").strip()
+    if not text:
+        return False
+
+    content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO reader_excerpts (
+                    user_id, article_id, excerpt_text, content_hash
+                )
+                VALUES (%s,%s,%s,%s)
+                ON CONFLICT (user_id, article_id, content_hash) DO NOTHING
+                RETURNING id
+                """,
+                (user_id, article_id, text, content_hash),
+            )
+            return cur.fetchone() is not None
+
+
+def get_reader_excerpts(user_id: int, article_id: int, limit: int = 8):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT excerpt_text, created_at
+                FROM reader_excerpts
+                WHERE user_id=%s AND article_id=%s
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (user_id, article_id, limit),
+            )
+            return list(reversed(cur.fetchall()))
+
+
+def get_reader_excerpt_count(user_id: int, article_id: int) -> int:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM reader_excerpts
+                WHERE user_id=%s AND article_id=%s
+                """,
+                (user_id, article_id),
+            )
+            row = cur.fetchone()
+            return int(row["count"]) if row else 0
 
 
 def start_discussion(user_id: int, article_id: int) -> None:
