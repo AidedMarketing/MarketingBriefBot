@@ -13,6 +13,7 @@ from telegram.ext import (
 from database import (
     get_article,
     get_history,
+    get_preference_summary,
     get_saved_articles,
     get_today_article,
     init_db,
@@ -64,6 +65,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/today — Get your next recommended read\n"
         "/saved — View saved articles\n"
         "/history — View recent recommendations\n"
+        "/topics — See what The Brief is learning\n"
         "/refresh — Check sources for new articles\n"
         "/help — View commands"
     )
@@ -75,9 +77,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/today — Your next recommendation\n"
         "/saved — Saved reading list\n"
         "/history — Recent recommendation history\n"
+        "/topics — Your emerging topic preferences\n"
         "/refresh — Discover new articles now\n"
         "/help — Show this menu\n\n"
-        "Use 👍 and 👎 on recommendations to teach The Brief what you want more or less of."
+        "The Brief now balances publications, favors fresher discoveries, and uses your 👍/👎 feedback to personalize the queue."
     )
 
 
@@ -87,7 +90,8 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await message.edit_text(
         "✅ Refresh complete.\n\n"
         f"Found {result['found']} article candidates.\n"
-        f"Added {result['added']} new articles.\n\n"
+        f"Added {result['added']} new articles.\n"
+        "Updated the recommendation metadata for existing articles too.\n\n"
         "Send /today for your next recommendation."
     )
 
@@ -155,10 +159,34 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def topics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    rows = get_preference_summary(update.effective_user.id)
+    if not rows:
+        await update.message.reply_text(
+            "🧭 I don't have enough preference data yet.\n\n"
+            "Use 👍 More Like This and 👎 Less Like This on a few recommendations, "
+            "then come back to /topics."
+        )
+        return
+
+    lines = ["🧭 <b>What The Brief Is Learning</b>\n"]
+    for row in rows:
+        net = row["likes"] - row["dislikes"]
+        signal = "↑" if net > 0 else "↓" if net < 0 else "→"
+        lines.append(
+            f'{signal} <b>{escape(row["topic"])}</b> — '
+            f'{row["likes"]} 👍 · {row["dislikes"]} 👎'
+        )
+
+    lines.append(
+        "\nThese signals influence future recommendations, but publication diversity "
+        "is still protected so your feed does not become an echo chamber."
+    )
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
 async def article_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    await query.answer()
-
     action, article_id_text = query.data.split(":", 1)
     article_id = int(article_id_text)
     user_id = update.effective_user.id
@@ -170,30 +198,30 @@ async def article_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if action == "save":
         record_activity(article_id, "saved", user_id, dedupe=True)
-        await query.answer("Saved to your reading list 🔖", show_alert=False)
+        await query.answer("Saved to your reading list 🔖")
         return
 
     if action == "like":
         record_activity(article_id, "liked", user_id, dedupe=True)
-        await query.answer("Got it — more like this 👍", show_alert=False)
+        await query.answer("Got it — more like this 👍")
         return
 
     if action == "dislike":
         record_activity(article_id, "disliked", user_id, dedupe=True)
-        await query.answer("Got it — I'll weight this down 👎", show_alert=False)
+        await query.answer("Got it — I'll weight this down 👎")
         return
 
     if action == "discuss":
         record_activity(article_id, "discussed", user_id, dedupe=True)
+        await query.answer()
         await query.message.reply_text(
             "💬 <b>Discussion Room</b>\n\n"
             f"<b>{escape(article['title'])}</b>\n\n"
-            "After you read it, send me what stood out — even a single sentence. "
-            "For now, use these three prompts:\n\n"
+            "After you read it, send me what stood out — even a single sentence.\n\n"
             "1️⃣ What's the main argument in your own words?\n"
             "2️⃣ What do you agree or disagree with?\n"
             "3️⃣ Where could this apply to marketing, business, or your work?\n\n"
-            "The next release will make this an AI-guided article discussion directly inside The Brief.",
+            "AI-guided discussion is the next dedicated release.",
             parse_mode="HTML",
         )
 
@@ -211,10 +239,11 @@ def main() -> None:
     application.add_handler(CommandHandler("today", today))
     application.add_handler(CommandHandler("saved", saved))
     application.add_handler(CommandHandler("history", history))
+    application.add_handler(CommandHandler("topics", topics))
     application.add_handler(CommandHandler("refresh", refresh_command))
     application.add_handler(CallbackQueryHandler(article_action))
 
-    print("My Marketing Brief is running...", flush=True)
+    print("My Marketing Brief v0.4 is running...", flush=True)
     application.run_polling()
 
 
