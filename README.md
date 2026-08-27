@@ -67,3 +67,15 @@ The bot does not bypass subscription authentication or redistribute full article
 - Exact user phrases/keywords pull the matching article chunk plus neighboring context.
 - Public, non-paywalled JSON-LD `articleBody` is used when it is materially more complete than DOM extraction.
 - Luna is no longer allowed to treat an omitted retrieval chunk as proof that the article itself never mentioned something.
+
+
+## v0.7 — Partial Intelligence
+
+- Partial-context articles are now treated as usable reading contexts, not failure states.
+- The Brief answers normally from available partial text and only mentions missing context when it actually affects the question.
+- During an active partial/metadata discussion, pasted passages are automatically stored as private reader context when they look like article excerpts.
+- Reader-added excerpts persist in Postgres and are supplied to Luna on future turns for that article.
+- Recommendation/context labels now show stored word count and reader-excerpt count.
+- `/debugarticle` now reports reader-excerpt count alongside stored article diagnostics.
+- Sharing an HBR link no longer automatically forces a formal import session; you can read in HBR, discuss in Telegram, and paste only the section that matters.
+- The full PDF/text import workflow remains available as an optional fallback.
