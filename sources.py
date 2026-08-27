@@ -7,7 +7,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from database import save_article_content, upsert_article
+from database import batch_upsert_articles, save_article_content, upsert_article
 
 HEADERS = {
     "User-Agent": (
@@ -349,13 +349,11 @@ def enrich_article(article: dict) -> bool:
 
 def refresh_sources(force: bool = True):
     found = 0
-    added = 0
-    enriched = 0
     errors = []
-    candidates_all = []
+    payloads = []
 
-    # /refresh is primarily discovery. Keep this fast and predictable.
-    with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=6.0) as client:
+    # Refresh is discovery-only. Full-text enrichment happens on demand in /today.
+    with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=5.0) as client:
         for source in SOURCES:
             try:
                 response = client.get(source["home"])
@@ -363,53 +361,13 @@ def refresh_sources(force: bool = True):
                 candidates = extract_candidates(source, response.text)
                 found += len(candidates)
 
-                # Store every discovered article immediately using headline-level metadata.
                 for title, url in candidates:
-                    if upsert_article(article_payload(source, title, url, {})):
-                        added += 1
-                    candidates_all.append((source, title, url))
+                    payloads.append(article_payload(source, title, url, {}))
+
             except Exception as exc:
                 errors.append(f"{source['name']} homepage: {type(exc).__name__}")
 
-    # Deep-reading every discovered URL made refresh take many minutes.
-    # Only a small front batch is enriched here; /today enriches the selected article on demand.
-    if force and candidates_all:
-        selected = []
-        per_source = {}
-        for item in candidates_all:
-            source = item[0]
-            count = per_source.get(source["name"], 0)
-            if count < 4:
-                selected.append(item)
-                per_source[source["name"]] = count + 1
-
-        with ThreadPoolExecutor(max_workers=min(6, len(selected))) as pool:
-            futures = [
-                pool.submit(_fetch_article_page, source, title, url)
-                for source, title, url in selected
-            ]
-            source_by_url = {url: source for source, _, url in selected}
-
-            for future in as_completed(futures):
-                title, url, page, error = future.result()
-                source = source_by_url[url]
-                if error:
-                    errors.append(f"{source['name']} article: {error}")
-                    continue
-                if not page:
-                    continue
-
-                enriched += 1
-                upsert_article(article_payload(source, title, url, page))
-                save_article_content(
-                    url=url,
-                    source_type="public_web",
-                    content_status=page["content_status"],
-                    plain_text=page["plain_text"],
-                    meta_description=page["meta_description"],
-                    word_count=page["word_count"],
-                    content_hash=page["content_hash"],
-                )
+    added = batch_upsert_articles(payloads)
 
     if errors:
         print("Source refresh warnings:", "; ".join(errors[:10]), flush=True)
@@ -417,7 +375,7 @@ def refresh_sources(force: bool = True):
     return {
         "found": found,
         "added": added,
-        "enriched": enriched,
+        "enriched": 0,
         "errors": errors,
         "refreshed_at": datetime.now(timezone.utc).isoformat(),
     }
