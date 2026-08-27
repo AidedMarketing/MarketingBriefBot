@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Iterable
 
 import httpx
@@ -160,3 +161,70 @@ def _article_context(article: dict, user_message: str = "") -> str:
         f"Article text/context:\n{body_for_model or '(none)'}"
     )
 
+
+
+def _history_text(history: Iterable[dict]) -> str:
+    lines = []
+    for message in history:
+        role = "User" if message["role"] == "user" else "The Brief"
+        lines.append(f"{role}: {message['content']}")
+    return "\n".join(lines[-12:])
+
+
+def _call_openai(instructions: str, prompt: str, max_output_tokens: int = 700) -> str:
+    if not OPENAI_API_KEY:
+        raise AIUnavailable("OPENAI_API_KEY is not configured.")
+
+    response = httpx.post(
+        OPENAI_URL,
+        headers={
+            "Authorization": "Bearer " + OPENAI_API_KEY,
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": OPENAI_MODEL,
+            "instructions": instructions,
+            "input": prompt,
+            "max_output_tokens": max_output_tokens,
+        },
+        timeout=45.0,
+    )
+    response.raise_for_status()
+    text = _extract_output_text(response.json())
+    if not text:
+        raise AIUnavailable("The AI provider returned no text.")
+    return text
+
+
+def discuss(article: dict, history: list[dict], user_message: str) -> str:
+    instructions = (
+        "You are The Brief, a thoughtful professional-reading discussion partner. "
+        "Help the user learn business, marketing, strategy, leadership, and technology through the selected article. "
+        "Be concise but substantive. Test assumptions, explain unfamiliar concepts, and connect ideas to practical work. "
+        "Ground article-specific claims only in the supplied context. "
+        "If context is partial or metadata-only, distinguish article-grounded observations from general topic analysis. "
+        "Never invent an article's thesis, examples, evidence, or conclusions. "
+        "If deeper article-specific analysis requires missing text, ask the user to import or paste the relevant passage. "
+        "Do not reproduce long copyrighted passages."
+    )
+    prompt = (
+        f"ARTICLE\n{_article_context(article, user_message)}\n\n"
+        f"RECENT DISCUSSION\n{_history_text(history) or '(none yet)'}\n\n"
+        f"USER MESSAGE\n{user_message}"
+    )
+    return _call_openai(instructions, prompt)
+
+
+def create_learning_note(article: dict, history: list[dict]) -> str:
+    instructions = (
+        "Create a compact learning note from a professional-reading discussion. "
+        "Use exactly three short sections: Key idea, My takeaway, Application. "
+        "Base article-specific claims only on supplied article context and the user's discussion. "
+        "If the article context is partial, preserve that uncertainty. Do not invent claims."
+    )
+    history_text = _history_text(history)
+    prompt = (
+        f"ARTICLE\n{_article_context(article, history_text)}\n\n"
+        f"DISCUSSION\n{history_text}"
+    )
+    return _call_openai(instructions, prompt, max_output_tokens=400)
