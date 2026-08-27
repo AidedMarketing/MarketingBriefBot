@@ -240,3 +240,47 @@ def create_learning_note(article: dict, history: list[dict]) -> str:
         f"DISCUSSION\n{history_text}"
     )
     return _call_openai(instructions, prompt, max_output_tokens=400)
+
+
+def reading_lens(article: dict) -> str:
+    instructions = (
+        "Create a short pre-reading lens for a professional article. "
+        "Do not summarize the whole article or spoil every conclusion. "
+        "Give exactly three things to watch for while reading, then one reflection question. "
+        "Ground article-specific details only in the supplied context. "
+        "If context is partial, make the lens useful from the available material without repeatedly warning about access."
+    )
+    prompt = f"ARTICLE\n{_article_context(article, 'pre-reading lens')}"
+    return _call_openai(instructions, prompt, max_output_tokens=500)
+
+
+def guided_learning_action(article: dict, history: list[dict], mode: str) -> str:
+    mode_instructions = {
+        "keyideas": (
+            "Identify 3 to 5 high-value ideas from the article context and discussion. "
+            "For each, explain why it matters in one or two sentences. "
+            "Do not invent missing article claims."
+        ),
+        "apply": (
+            "Turn the article into practical application. "
+            "Give 3 concrete ways the user could apply the ideas in marketing, business, or career development. "
+            "Separate article-grounded application from broader suggestions when needed."
+        ),
+        "challenge": (
+            "Act as a learning coach. Ask exactly one thoughtful question that tests whether the user understands "
+            "the article's central tradeoff, implication, or practical lesson. Do not answer the question yourself."
+        ),
+    }
+
+    if mode not in mode_instructions:
+        raise ValueError("Unknown learning mode")
+
+    instructions = (
+        "You are The Brief, a professional-reading learning coach. "
+        + mode_instructions[mode]
+    )
+    prompt = (
+        f"ARTICLE\n{_article_context(article, _history_text(history))}\n\n"
+        f"DISCUSSION\n{_history_text(history) or '(none yet)'}"
+    )
+    return _call_openai(instructions, prompt, max_output_tokens=900)
