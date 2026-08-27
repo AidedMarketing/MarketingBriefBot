@@ -19,6 +19,7 @@ from telegram.ext import (
 from ai_provider import AIUnavailable, create_learning_note, discuss
 from database import (
     add_discussion_message,
+    add_reader_excerpt,
     append_import_text,
     cancel_import,
     end_discussion,
@@ -30,6 +31,8 @@ from database import (
     get_import_session,
     get_learning_notes,
     get_preference_summary,
+    get_reader_excerpt_count,
+    get_reader_excerpts,
     get_saved_articles,
     get_today_article,
     init_db,
@@ -103,13 +106,37 @@ def diagnostic_match(article: dict, query: str):
 
 
 
+def attach_reader_context(article: dict, user_id: int):
+    if not article:
+        return article
+    enriched = dict(article)
+    enriched["reader_excerpts"] = get_reader_excerpts(user_id, article["id"])
+    enriched["reader_excerpt_count"] = get_reader_excerpt_count(user_id, article["id"])
+    return enriched
+
+
+def looks_like_reader_excerpt(text: str) -> bool:
+    stripped = (text or "").strip()
+    words = stripped.split()
+    if len(words) >= 70:
+        return True
+    if stripped.lower().startswith(("excerpt:", "passage:", "quote:")):
+        return True
+    sentence_marks = sum(stripped.count(mark) for mark in (".", "!", "?"))
+    return len(stripped) >= 420 and sentence_marks >= 3 and "?" not in stripped[-120:]
+
+
 def content_label(article: dict) -> str:
     status = article.get("content_status") or "metadata_only"
+    words = article.get("word_count") or 0
+    excerpts = article.get("reader_excerpt_count") or 0
+    extra = f" · +{excerpts} reader excerpt{'s' if excerpts != 1 else ''}" if excerpts else ""
+
     if status == "full":
-        return "📄 Full article context"
+        return f"📄 Full context · {words:,} words{extra}"
     if status == "partial":
-        return "📑 Partial article context"
-    return "🔐 Metadata only — import for full discussion"
+        return f"📑 Partial context · {words:,} words{extra}"
+    return f"🔐 Metadata only{extra}"
 
 
 def article_keyboard(article: dict) -> InlineKeyboardMarkup:
@@ -199,6 +226,7 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except asyncio.TimeoutError:
             pass
 
+    article = attach_reader_context(article, uid)
     record_activity(article["id"], "delivered", uid)
     await update.message.reply_text(
         format_article(article),
@@ -279,6 +307,7 @@ async def debug_article_command(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
+    article = attach_reader_context(article, uid)
     query = " ".join(context.args).strip()
     status = article.get("content_status") or "metadata_only"
     source_type = article.get("source_type") or "unknown"
@@ -292,6 +321,7 @@ async def debug_article_command(update: Update, context: ContextTypes.DEFAULT_TY
         f"Content status: {status}",
         f"Source type: {source_type}",
         f"Stored words: {word_count:,}",
+        f"Reader excerpts: {article.get('reader_excerpt_count') or 0}",
     ]
 
     if query:
@@ -322,6 +352,7 @@ async def note_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not session:
         await update.message.reply_text("There isn't an active discussion. Tap 💬 Discuss first.")
         return
+    session = attach_reader_context(session, uid)
     history_rows = get_discussion_history(uid, session["id"])
     if not history_rows:
         await update.message.reply_text("Talk through the article with me first, then use /note.")
@@ -398,14 +429,17 @@ async def article_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         record_activity(aid, "discussed", uid, True)
         start_discussion(uid, aid)
         await q.answer()
+        article = attach_reader_context(article, uid)
         status = article.get("content_status") or "metadata_only"
-        grounding = (
-            "I have full article context."
-            if status == "full"
-            else "I only have partial context."
-            if status == "partial"
-            else "I only have metadata right now. Import the article for article-specific analysis."
-        )
+        if status == "full":
+            grounding = "Full context is available."
+        elif status == "partial":
+            grounding = (
+                f"Partial context is available ({article.get('word_count') or 0:,} words). "
+                "I'll answer from what I have and only ask for a passage if the missing section matters."
+            )
+        else:
+            grounding = "I have metadata only. You can still discuss the topic or add a passage from the article."
         await q.message.reply_text(
             "💬 <b>Discussion started</b>\n\n"
             f"<b>{escape(article['title'])}</b>\n"
@@ -481,16 +515,18 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if article:
                 status = article.get("content_status") or "metadata_only"
                 if article["publication"] == "Harvard Business Review" and status != "full":
-                    start_import(uid, article["id"])
+                    article = attach_reader_context(article, uid)
                     await update.message.reply_text(
                         "🔐 <b>HBR article recognized</b>\n\n"
                         f"<b>{escape(article['title'])}</b>\n"
                         f"{escape(content_label(article))}\n\n"
-                        "Your HBR subscription stays private in HBR. To give The Brief the subscriber text, "
-                        "paste the article text here or upload a text-based PDF, then use /finishimport.",
+                        "Open it normally with your HBR subscription. If you discuss a section I don't have, "
+                        "paste that passage into the active discussion and I'll add it as reader context automatically.",
                         parse_mode="HTML",
+                        reply_markup=article_keyboard(article),
                     )
                 else:
+                    article = attach_reader_context(article, uid)
                     await update.message.reply_text(
                         "🔗 <b>Article recognized</b>\n\n"
                         f"<b>{escape(article['title'])}</b>\n"
@@ -514,6 +550,14 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not session:
         return
 
+    status = session.get("content_status") or "metadata_only"
+    saved_excerpt = False
+    if status in ("partial", "metadata_only") and looks_like_reader_excerpt(user_text):
+        saved_excerpt = add_reader_excerpt(uid, session["id"], user_text)
+        if saved_excerpt:
+            await update.message.reply_text("➕ Added this passage as reader context for the active article.")
+
+    session = attach_reader_context(session, uid)
     add_discussion_message(uid, session["id"], "user", user_text)
     history_rows = get_discussion_history(uid, session["id"])
     await update.message.chat.send_action("typing")
@@ -555,7 +599,7 @@ def main():
     app.add_handler(MessageHandler(filters.Document.ALL, document_import))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
 
-    print("My Marketing Brief v0.6 is running...", flush=True)
+    print("My Marketing Brief v0.7 is running...", flush=True)
     app.run_polling()
 
 
