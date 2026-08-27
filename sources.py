@@ -1,5 +1,6 @@
 import hashlib
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 
@@ -302,50 +303,71 @@ def article_payload(source: dict, title: str, url: str, page: dict | None = None
     }
 
 
+def _fetch_article_page(source: dict, title: str, url: str):
+    try:
+        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=8.0) as client:
+            response = client.get(url)
+            response.raise_for_status()
+            page = extract_article_page(source, response.text, url)
+            return title, url, page, None
+    except Exception as exc:
+        return title, url, {}, type(exc).__name__
+
+
 def refresh_sources(force: bool = True):
     found = 0
     added = 0
     enriched = 0
     errors = []
-    timeout = httpx.Timeout(15.0, connect=8.0)
+    candidates_all = []
 
-    with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=timeout) as client:
+    # Homepage discovery stays sequential and cheap.
+    with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=8.0) as client:
         for source in SOURCES:
             try:
                 response = client.get(source["home"])
                 response.raise_for_status()
                 candidates = extract_candidates(source, response.text)
                 found += len(candidates)
-
                 for title, url in candidates:
-                    page = {}
-                    try:
-                        article_response = client.get(url)
-                        article_response.raise_for_status()
-                        page = extract_article_page(source, article_response.text, url)
-                        enriched += 1
-                    except Exception:
-                        page = {}
-
-                    if upsert_article(article_payload(source, title, url, page)):
-                        added += 1
-
-                    if page:
-                        save_article_content(
-                            url=url,
-                            source_type="public_web",
-                            content_status=page["content_status"],
-                            plain_text=page["plain_text"],
-                            meta_description=page["meta_description"],
-                            word_count=page["word_count"],
-                            content_hash=page["content_hash"],
-                        )
-
+                    candidates_all.append((source, title, url))
             except Exception as exc:
-                errors.append(f"{source['name']}: {type(exc).__name__}")
+                errors.append(f"{source['name']} homepage: {type(exc).__name__}")
+
+    # Deep article enrichment runs in parallel so /refresh doesn't take many minutes.
+    max_workers = min(8, max(1, len(candidates_all)))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [
+            pool.submit(_fetch_article_page, source, title, url)
+            for source, title, url in candidates_all
+        ]
+
+        source_by_url = {url: source for source, _, url in candidates_all}
+
+        for future in as_completed(futures):
+            title, url, page, error = future.result()
+            source = source_by_url[url]
+
+            if error:
+                errors.append(f"{source['name']} article: {error}")
+
+            if upsert_article(article_payload(source, title, url, page)):
+                added += 1
+
+            if page:
+                enriched += 1
+                save_article_content(
+                    url=url,
+                    source_type="public_web",
+                    content_status=page["content_status"],
+                    plain_text=page["plain_text"],
+                    meta_description=page["meta_description"],
+                    word_count=page["word_count"],
+                    content_hash=page["content_hash"],
+                )
 
     if errors:
-        print("Source refresh warnings:", "; ".join(errors), flush=True)
+        print("Source refresh warnings:", "; ".join(errors[:10]), flush=True)
 
     return {
         "found": found,
