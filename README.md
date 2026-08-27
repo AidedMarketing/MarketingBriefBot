@@ -91,3 +91,19 @@ The bot does not bypass subscription authentication or redistribute full article
   - **Save Note** — creates and stores a learning note from the discussion.
 - Guided actions use the same full/partial/reader-supplied context rules as normal conversation.
 - Guided outputs are recorded in discussion history so the learning conversation can continue naturally.
+
+
+## v0.9 — Quiet Learning Memory
+
+The backend now maintains a durable learning profile without requiring the reader to manage it.
+
+Automatically remembered signals include:
+- articles delivered and topics/publications encountered
+- articles actively discussed
+- natural discussion depth
+- likes and dislikes
+- Reading Lens usage
+- Key Ideas, Apply It, and Challenge Me usage
+- saved articles and learning notes
+
+The memory layer is intentionally passive: normal Telegram reading requires no tagging, categorizing, scoring, or profile maintenance. A temporary `/memory` command exposes a compact diagnostic view while the system is being developed. Future recommendation and weekly-review releases can consume this backend profile without adding front-end work.
