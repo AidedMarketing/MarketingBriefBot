@@ -40,7 +40,7 @@ from database import (
     start_import,
 )
 from importer import ingest_shared_url, source_for_url
-from sources import refresh_sources
+from sources import enrich_article, refresh_sources
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -166,9 +166,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔎 Checking and reading the publications now…")
     try:
-        result = await asyncio.wait_for(asyncio.to_thread(refresh_sources), timeout=90)
+        result = await asyncio.wait_for(asyncio.to_thread(refresh_sources), timeout=45)
     except asyncio.TimeoutError:
-        await msg.edit_text("⚠️ Refresh took too long and was stopped. The bot is still online; try /today or run /refresh again later.")
+        await msg.edit_text("⚠️ Refresh exceeded 45 seconds and was stopped. The bot is still online; /today can continue using the existing queue.")
         return
     await msg.edit_text(
         f"✅ Refresh complete.\n\n"
@@ -181,11 +181,24 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    await asyncio.to_thread(refresh_sources, False)
+    # Fast discovery only; deep-fetch just the article we are about to recommend.
+    try:
+        await asyncio.wait_for(asyncio.to_thread(refresh_sources, False), timeout=20)
+    except asyncio.TimeoutError:
+        pass
+
     article = get_today_article(uid)
     if not article:
         await update.message.reply_text("You've reached the end of the current queue. Try /refresh.")
         return
+
+    if (article.get("content_status") or "metadata_only") != "full":
+        try:
+            await asyncio.wait_for(asyncio.to_thread(enrich_article, article), timeout=12)
+            article = get_article(article["id"]) or article
+        except asyncio.TimeoutError:
+            pass
+
     record_activity(article["id"], "delivered", uid)
     await update.message.reply_text(
         format_article(article),
