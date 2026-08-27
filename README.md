@@ -2,21 +2,36 @@
 
 A mobile-first Telegram bot that curates professional reading from Harvard Business Review, Marketing Brew, and MIT Sloan Management Review.
 
-## Current release: v0.2 — Real Content
+## Current release: v0.3 — Interaction & Learning
 
 - Railway-hosted Telegram bot
 - Railway Postgres persistence
 - Live article discovery from the three core publications
-- Simple topic classification and relevance scoring
-- `/today` recommendation card
-- `/refresh` manual source refresh
+- Topic classification and relevance scoring
+- Personalized recommendation queue
+- Recommendations are not repeatedly delivered
+- Save articles for later
+- More Like This / Less Like This feedback
+- Topic preferences influence future recommendations
+- Recommendation history
+- Discussion-room starter
 
 ## Commands
 
 - `/start` — welcome screen
-- `/today` — current recommended article
+- `/today` — next personalized recommendation
+- `/saved` — saved reading list
+- `/history` — recent recommendations
 - `/refresh` — scan sources for new article candidates
 - `/help` — command list
+
+## Recommendation buttons
+
+- 📖 Read Article
+- 🔖 Save
+- 👍 More Like This
+- 👎 Less Like This
+- 💬 Discuss
 
 ## Railway variables
 
