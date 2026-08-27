@@ -178,7 +178,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/topics — Preference signals\n"
         "/notes — Learning notes\n"
         "/refresh — Find new articles\n"
-        "/debugarticle <keyword> — Inspect stored article context\n"
+        "/debugarticle <keyword> — Inspect latest /today article\n"
+        "/debugarticle active <keyword> — Inspect active discussion\n"
         "/finishimport — Finish an article import\n"
         "/cancelimport — Cancel an article import\n"
         "/end — End an active discussion\n"
@@ -299,16 +300,29 @@ async def notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def debug_article_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    article = get_active_discussion(uid)
+    args = list(context.args)
+
+    # Default to the most recent /today recommendation so diagnostics track what
+    # the user is currently testing. Use "/debugarticle active ..." to inspect
+    # the currently active discussion instead.
+    use_active = bool(args and args[0].lower() == "active")
+    if use_active:
+        args = args[1:]
+        article = get_active_discussion(uid)
+        source_label = "active discussion"
+    else:
+        recent = get_history(uid, 1)
+        article = get_article(recent[0]["id"]) if recent else None
+        source_label = "latest /today recommendation"
 
     if not article:
         await update.message.reply_text(
-            "There isn't an active article discussion. Tap 💬 Discuss on an article first."
+            "I couldn't find an article to inspect yet. Run /today first, or use /debugarticle active while discussing an article."
         )
         return
 
     article = attach_reader_context(article, uid)
-    query = " ".join(context.args).strip()
+    query = " ".join(args).strip()
     status = article.get("content_status") or "metadata_only"
     source_type = article.get("source_type") or "unknown"
     word_count = article.get("word_count") or 0
@@ -316,6 +330,7 @@ async def debug_article_command(update: Update, context: ContextTypes.DEFAULT_TY
     lines = [
         "🧪 Article Diagnostics",
         "",
+        f"Inspecting: {source_label}",
         f"Title: {article['title']}",
         f"Publication: {article['publication']}",
         f"Content status: {status}",
