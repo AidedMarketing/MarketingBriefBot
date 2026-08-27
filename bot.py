@@ -28,6 +28,7 @@ from database import (
     get_article,
     get_discussion_history,
     get_history,
+    get_learning_profile,
     get_import_session,
     get_learning_notes,
     get_preference_summary,
@@ -370,6 +371,31 @@ async def debug_article_command(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_text("\n".join(lines))
 
 
+async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    profile = get_learning_profile(uid)
+    totals = profile["totals"] or {}
+    topics = profile["topics"][:5]
+
+    lines = [
+        "🧠 Learning Memory",
+        "",
+        f"Articles seen: {totals.get('articles_seen', 0)}",
+        f"Articles discussed: {totals.get('articles_discussed', 0)}",
+        f"Discussion turns: {totals.get('discussion_turns', 0)}",
+        f"Challenges used: {totals.get('challenges_used', 0)}",
+        f"Notes saved: {totals.get('notes_saved', 0)}",
+    ]
+    if topics:
+        lines.extend(["", "Current topic signals:"])
+        for row in topics:
+            lines.append(
+                f"• {row['topic']}: {row['engaged']} engaged / {row['exposure']} seen"
+            )
+
+    await update.message.reply_text("\n".join(lines))
+
+
 async def end_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     end_discussion(update.effective_user.id)
     await update.message.reply_text("✅ Discussion closed.")
@@ -644,6 +670,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     session = attach_reader_context(session, uid)
     add_discussion_message(uid, session["id"], "user", user_text)
+    record_activity(session["id"], "discussion_turn", uid)
     history_rows = get_discussion_history(uid, session["id"])
     await update.message.chat.send_action("typing")
     try:
@@ -673,6 +700,7 @@ def main():
         ("notes", notes),
         ("refresh", refresh_command),
         ("debugarticle", debug_article_command),
+        ("memory", memory_command),
         ("end", end_command),
         ("note", note_command),
         ("finishimport", finish_import_command),
@@ -684,7 +712,7 @@ def main():
     app.add_handler(MessageHandler(filters.Document.ALL, document_import))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
 
-    print("My Marketing Brief v0.8 is running...", flush=True)
+    print("My Marketing Brief v0.9 is running...", flush=True)
     app.run_polling()
 
 
