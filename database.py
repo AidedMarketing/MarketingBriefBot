@@ -106,6 +106,31 @@ def init_db() -> None:
             """)
 
             cur.execute("""
+                CREATE TABLE IF NOT EXISTS learning_memory (
+                    user_id BIGINT NOT NULL,
+                    article_id BIGINT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+                    topic TEXT,
+                    publication TEXT,
+                    delivered_count INTEGER NOT NULL DEFAULT 0,
+                    discussed BOOLEAN NOT NULL DEFAULT FALSE,
+                    liked BOOLEAN,
+                    saved BOOLEAN NOT NULL DEFAULT FALSE,
+                    reading_lens_used BOOLEAN NOT NULL DEFAULT FALSE,
+                    key_ideas_used BOOLEAN NOT NULL DEFAULT FALSE,
+                    apply_used BOOLEAN NOT NULL DEFAULT FALSE,
+                    challenge_used BOOLEAN NOT NULL DEFAULT FALSE,
+                    note_saved BOOLEAN NOT NULL DEFAULT FALSE,
+                    discussion_turns INTEGER NOT NULL DEFAULT 0,
+                    last_engaged_at TIMESTAMPTZ DEFAULT NOW(),
+                    PRIMARY KEY (user_id, article_id)
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_learning_memory_user_engaged
+                ON learning_memory(user_id, last_engaged_at DESC)
+            """)
+
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS import_sessions (
                     user_id BIGINT PRIMARY KEY,
                     article_id BIGINT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
@@ -260,6 +285,140 @@ def save_article_content(
                 row["id"], source_type, content_status, plain_text,
                 meta_description, word_count, content_hash
             ))
+
+
+def update_learning_memory(user_id: int, article_id: int, action: str) -> None:
+    field_map = {
+        "delivered": "delivered_count",
+        "discussed": "discussed",
+        "liked": "liked",
+        "disliked": "liked",
+        "saved": "saved",
+        "reading_lens": "reading_lens_used",
+        "learn_keyideas": "key_ideas_used",
+        "learn_apply": "apply_used",
+        "learn_challenge": "challenge_used",
+        "note_saved": "note_saved",
+        "discussion_turn": "discussion_turns",
+    }
+    field = field_map.get(action)
+    if not field:
+        return
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT topic, publication FROM articles WHERE id=%s", (article_id,))
+            article = cur.fetchone()
+            if not article:
+                return
+
+            cur.execute(
+                """
+                INSERT INTO learning_memory (user_id, article_id, topic, publication)
+                VALUES (%s,%s,%s,%s)
+                ON CONFLICT (user_id, article_id) DO UPDATE
+                SET topic=EXCLUDED.topic,
+                    publication=EXCLUDED.publication,
+                    last_engaged_at=NOW()
+                """,
+                (user_id, article_id, article["topic"], article["publication"]),
+            )
+
+            if field in ("delivered_count", "discussion_turns"):
+                cur.execute(
+                    f"UPDATE learning_memory SET {field}={field}+1, last_engaged_at=NOW() WHERE user_id=%s AND article_id=%s",
+                    (user_id, article_id),
+                )
+            elif action == "liked":
+                cur.execute(
+                    "UPDATE learning_memory SET liked=TRUE, last_engaged_at=NOW() WHERE user_id=%s AND article_id=%s",
+                    (user_id, article_id),
+                )
+            elif action == "disliked":
+                cur.execute(
+                    "UPDATE learning_memory SET liked=FALSE, last_engaged_at=NOW() WHERE user_id=%s AND article_id=%s",
+                    (user_id, article_id),
+                )
+            else:
+                cur.execute(
+                    f"UPDATE learning_memory SET {field}=TRUE, last_engaged_at=NOW() WHERE user_id=%s AND article_id=%s",
+                    (user_id, article_id),
+                )
+
+
+def get_learning_profile(user_id: int):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    COUNT(*) AS articles_seen,
+                    COUNT(*) FILTER (WHERE discussed) AS articles_discussed,
+                    COUNT(*) FILTER (WHERE note_saved) AS notes_saved,
+                    COUNT(*) FILTER (WHERE challenge_used) AS challenges_used,
+                    COALESCE(SUM(discussion_turns),0) AS discussion_turns
+                FROM learning_memory
+                WHERE user_id=%s
+                """,
+                (user_id,),
+            )
+            totals = cur.fetchone()
+
+            cur.execute(
+                """
+                SELECT topic,
+                    COUNT(*) AS exposure,
+                    COUNT(*) FILTER (WHERE discussed OR note_saved OR challenge_used OR apply_used) AS engaged,
+                    COUNT(*) FILTER (WHERE liked=TRUE) AS likes,
+                    COUNT(*) FILTER (WHERE liked=FALSE) AS dislikes
+                FROM learning_memory
+                WHERE user_id=%s AND topic IS NOT NULL
+                GROUP BY topic
+                ORDER BY engaged DESC, exposure DESC, topic
+                """,
+                (user_id,),
+            )
+            topics = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT publication, COUNT(*) AS exposure
+                FROM learning_memory
+                WHERE user_id=%s AND publication IS NOT NULL
+                GROUP BY publication
+                ORDER BY exposure DESC
+                """,
+                (user_id,),
+            )
+            publications = cur.fetchall()
+
+    return {"totals": totals, "topics": topics, "publications": publications}
+
+
+def learning_memory_context(user_id: int) -> str:
+    profile = get_learning_profile(user_id)
+    totals = profile["totals"] or {}
+    topic_rows = profile["topics"][:10]
+    pub_rows = profile["publications"][:6]
+
+    topic_text = "; ".join(
+        f"{r['topic']}: seen {r['exposure']}, engaged {r['engaged']}, likes {r['likes']}, dislikes {r['dislikes']}"
+        for r in topic_rows
+    ) or "No topic history yet"
+
+    pub_text = "; ".join(
+        f"{r['publication']}: {r['exposure']}"
+        for r in pub_rows
+    ) or "No publication history yet"
+
+    return (
+        f"Articles seen: {totals.get('articles_seen', 0)}; "
+        f"discussed: {totals.get('articles_discussed', 0)}; "
+        f"notes: {totals.get('notes_saved', 0)}; "
+        f"challenges: {totals.get('challenges_used', 0)}; "
+        f"discussion turns: {totals.get('discussion_turns', 0)}. "
+        f"Topic history: {topic_text}. Publication history: {pub_text}."
+    )
 
 
 def record_activity(article_id: int, action: str, user_id: int, dedupe: bool = False) -> None:
