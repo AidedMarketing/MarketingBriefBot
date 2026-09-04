@@ -107,3 +107,32 @@ Automatically remembered signals include:
 - saved articles and learning notes
 
 The memory layer is intentionally passive: normal Telegram reading requires no tagging, categorizing, scoring, or profile maintenance. A temporary `/memory` command exposes a compact diagnostic view while the system is being developed. Future recommendation and weekly-review releases can consume this backend profile without adding front-end work.
+
+
+## v1.0 — Daily Brief
+
+The recommendation layer now uses the quiet learning memory directly while keeping the Telegram experience compact.
+
+### Backend intelligence
+Today's article is scored using an explainable mix of:
+- durable topic engagement
+- positive and negative preference signals
+- discussion depth
+- coverage gaps across topics
+- recent topic repetition
+- recent publication repetition
+- article freshness
+- the article's baseline recommendation score
+
+The scoring system can intentionally **deepen**, **broaden**, **balance**, **revisit**, or **explore** without asking the reader to configure a learning plan.
+
+### Calm frontend
+`/today` still produces one compact recommendation card. The visible changes are limited to:
+- **Why today** — a short explanation of why this read fits the current learning pattern
+- **Reading focus** — one practical objective to carry into the article
+- a subtle reading mode such as Deepen, Broaden, Balance, Revisit, or Explore
+
+No new maintenance workflow, tagging system, dashboard, or manual profile management was added.
+
+### Architecture
+The Daily Brief selection logic lives in `daily_brief.py` as a separate recommendation layer. `app.py` applies that layer to the existing Telegram bot, keeping recommendation intelligence modular from the user interface and article/discussion systems.
