@@ -307,14 +307,18 @@ async def topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    rows = get_learning_notes(update.effective_user.id, 10)
-    if not rows:
-        await update.message.reply_text("📝 No learning notes yet. Start a discussion and use /note.")
+    try:
+        rows = await asyncio.to_thread(get_learning_notes, update.effective_user.id, 10)
+    except Exception:
+        await update.message.reply_text("I couldn't load your notes right now. Please try again shortly.")
         return
-    lines = ["📝 <b>Learning Notes</b>"]
+    if not rows:
+        await update.message.reply_text("📝 No learning notes yet. Use /savenote after a response you want to keep.")
+        return
+    lines = ["📝 Learning Notes"]
     for i, r in enumerate(rows, 1):
-        lines.append(f'{i}. <b>{escape(r["title"])}</b>\n{escape(r["note"])}')
-    await update.message.reply_text("\n\n".join(lines), parse_mode="HTML")
+        lines.append(f'{i}. {r["title"]}\n{r["note"]}')
+    await send_long_reply(update.message, "\n\n".join(lines))
 
 
 async def debug_article_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -405,27 +409,55 @@ async def end_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Discussion closed.")
 
 
-async def note_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    session = get_active_discussion(uid)
-    if not session:
-        await update.message.reply_text("There isn't an active discussion. Tap 💬 Discuss first.")
-        return
-    session = attach_reader_context(session, uid)
-    history_rows = get_discussion_history(uid, session["id"])
-    if not history_rows:
-        await update.message.reply_text("Talk through the article with me first, then use /note.")
-        return
+async def persist_note(message, uid, aid, note):
     try:
-        note = await asyncio.to_thread(create_learning_note, session, history_rows)
-    except (AIUnavailable, httpx.HTTPError):
-        await update.message.reply_text("I couldn't create the note right now.")
+        await asyncio.to_thread(save_learning_note, uid, aid, note)
+    except Exception:
+        await message.reply_text("I couldn't confirm the save. Check /notes before retrying; your discussion is still available.")
         return
-    save_learning_note(uid, session["id"], note)
-    await update.message.reply_text(
-        f"📝 <b>Learning Note Saved</b>\n\n{escape(note)}",
-        parse_mode="HTML",
-    )
+    await message.reply_text("📝 Note saved. You can find it with /notes.")
+
+
+async def generate_and_save_note(message, uid, article, history_rows):
+    await message.reply_text("Preparing your learning note…")
+    try:
+        note = await asyncio.wait_for(
+            asyncio.to_thread(create_learning_note, article, history_rows), timeout=50
+        )
+    except Exception:
+        await message.reply_text("I couldn't create the summary right now. Use /savenote to save my latest response exactly.")
+        return
+    await persist_note(message, uid, article["id"], note)
+
+
+async def save_note_command(update, context):
+    await note_command(update, context, exact=True)
+
+
+async def note_command(update: Update, context: ContextTypes.DEFAULT_TYPE, exact=False):
+    uid = update.effective_user.id
+    message = update.message
+    try:
+        session = await asyncio.to_thread(get_active_discussion, uid)
+        if not session:
+            await message.reply_text("There isn't an active discussion. Tap 💬 Discuss on the article first.")
+            return
+        history_rows = await asyncio.to_thread(get_discussion_history, uid, session["id"])
+        if exact:
+            note = next((r["content"] for r in reversed(history_rows) if r["role"] == "assistant" and r["content"].strip()), None)
+            if not note:
+                await message.reply_text("There isn't a response to save yet. Discuss the article first.")
+                return
+            await persist_note(message, uid, session["id"], note)
+            return
+        if not history_rows:
+            await message.reply_text("Talk through the article with me first, then use /note.")
+            return
+        session = await asyncio.to_thread(attach_reader_context, session, uid)
+    except Exception:
+        await message.reply_text("I couldn't load the discussion right now. Please try again shortly.")
+        return
+    await generate_and_save_note(message, uid, session, history_rows)
 
 
 async def finish_import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -459,6 +491,8 @@ async def article_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         aid = int(parts[1])
     uid = update.effective_user.id
+    if action == "learn" and mode == "note":
+        await q.answer()
     article = get_article(aid)
 
     if not article:
@@ -472,21 +506,9 @@ async def article_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if mode == "note":
             if not history_rows:
-                await q.answer()
                 await q.message.reply_text("Talk through the article with me first, then save a learning note.")
                 return
-            try:
-                note = await asyncio.to_thread(create_learning_note, article, history_rows)
-            except Exception:
-                await q.answer()
-                await q.message.reply_text("I couldn't create the learning note right now.")
-                return
-            save_learning_note(uid, aid, note)
-            await q.answer("Note saved 📝")
-            await q.message.reply_text(
-                f"📝 <b>Learning Note Saved</b>\n\n{escape(note)}",
-                parse_mode="HTML",
-            )
+            await generate_and_save_note(q.message, uid, article, history_rows)
             return
 
         await q.answer()
@@ -708,6 +730,7 @@ def main():
         ("memory", memory_command),
         ("end", end_command),
         ("note", note_command),
+        ("savenote", save_note_command),
         ("finishimport", finish_import_command),
         ("cancelimport", cancel_import_command),
     ]:

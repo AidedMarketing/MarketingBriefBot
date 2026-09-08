@@ -144,3 +144,13 @@ remaining release gates and validation limits. `/today` now restores the same
 selection for the Miami calendar day; `/next` explicitly requests another read.
 New imports remain private reader context and do not assert full coverage based
 on length. Run regressions with `python -m unittest discover -s tests -v`.
+
+## Note saving fix
+
+- `/savenote` saves the latest assistant response in the active article discussion
+  exactly as written, without another model call. Use this for drafts.
+- `/note` and the Save Note button generate a learning summary, with immediate
+  feedback and a bounded generation wait.
+- `/notes` splits long output into readable messages.
+- Save confirmation is sent only after the database write succeeds. If confirmation
+  is uncertain, inspect `/notes` before retrying.
