@@ -1,16 +1,35 @@
 from html import escape
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from psycopg.types.json import Jsonb
 
 from database import get_connection
 
 
-def get_today_article(user_id: int):
+def get_today_article(user_id: int, force_new: bool = False):
     """Select today's article using durable learning memory plus recency/balance signals.
 
     The scoring model is intentionally explainable: interest, engagement, coverage gaps,
-    freshness, and recent topic/publication repetition each have a visible contribution.
+    discovery recency, and recent topic/publication repetition each have a visible contribution.
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
+            brief_date = datetime.now(ZoneInfo("America/New_York")).date()
+            # Serialize selection for the same user, including concurrent requests.
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (user_id,))
+            if not force_new:
+                cur.execute("""
+                    SELECT a.*, c.content_status, c.source_type, c.word_count,
+                           c.meta_description, c.plain_text, d.frame
+                    FROM daily_briefs d JOIN articles a ON a.id=d.article_id
+                    LEFT JOIN article_contents c ON c.article_id=a.id AND c.source_type='public_web'
+                    WHERE d.user_id=%s AND d.brief_date=%s
+                """, (user_id, brief_date))
+                existing = cur.fetchone()
+                if existing:
+                    article = dict(existing)
+                    article.update(article.pop("frame"))
+                    return article
             cur.execute(
                 """
                 WITH topic_memory AS (
@@ -85,12 +104,13 @@ def get_today_article(user_id: int):
                               END
                         ) AS personalized_score
                     FROM articles a
-                    LEFT JOIN article_contents c ON c.article_id=a.id
+                    LEFT JOIN article_contents c ON c.article_id=a.id AND c.source_type='public_web'
                     LEFT JOIN topic_memory tm ON tm.topic=a.topic
                     LEFT JOIN recent_publications rp ON rp.publication=a.publication
                     LEFT JOIN recent_topics rt ON rt.topic=a.topic
                     CROSS JOIN memory_summary ms
-                    WHERE NOT EXISTS (
+                    WHERE a.publication <> 'My Marketing Brief'
+                    AND NOT EXISTS (
                         SELECT 1 FROM activity seen
                         WHERE seen.article_id=a.id
                           AND seen.user_id=%s
@@ -104,6 +124,13 @@ def get_today_article(user_id: int):
                 (user_id, user_id, user_id),
             )
             row = cur.fetchone()
+            if row:
+                cur.execute("""
+                    INSERT INTO daily_briefs (user_id, brief_date, article_id, frame)
+                    VALUES (%s,%s,%s,%s)
+                    ON CONFLICT (user_id, brief_date) DO UPDATE
+                    SET article_id=EXCLUDED.article_id, frame=EXCLUDED.frame
+                """, (user_id, brief_date, row["id"], Jsonb(_daily_brief_frame(dict(row)))))
 
     if not row:
         return None
@@ -130,13 +157,13 @@ def _daily_brief_frame(article: dict) -> dict:
         reason = f"You've engaged positively with {topic}; this continues that thread without overloading it."
         mode = "Deepen"
     elif recent_pub >= 2:
-        reason = "I'm rotating the source mix while keeping the recommendation aligned with your learning history."
-        mode = "Balance"
+        reason = "This source has appeared recently; this article still ranks highest after the source repetition penalty."
+        mode = "Explore"
     elif recent_topic >= 2:
-        reason = f"You've seen {topic} recently, but this still earned today's spot on relevance and freshness."
+        reason = f"You've seen {topic} recently, but this still earned today's spot on relevance."
         mode = "Revisit"
     else:
-        reason = "This is the strongest current fit across relevance, freshness, and your developing reading pattern."
+        reason = "This is the strongest current fit across relevance and your developing reading pattern."
         mode = "Explore"
 
     objective = f"Read for one idea in {topic} that changes, sharpens, or challenges how you would approach real work."
@@ -158,7 +185,7 @@ def format_article(article: dict, content_label_fn, heading: str = "Today's Brie
         f"{escape(article['publication'])}\n\n"
         f"🎯 <b>Why today:</b>\n{escape(reason)}\n\n"
         f"🧭 <b>Reading focus:</b>\n{escape(objective)}\n\n"
-        f"{escape(mode)} · {escape(article['topic'])}\n"
+        f"{escape(mode)} · {escape(article.get('topic') or 'General')}\n"
         f"⏱ ~{article['reading_time']} min read\n"
         f"{escape(content_label_fn(article))}"
     )

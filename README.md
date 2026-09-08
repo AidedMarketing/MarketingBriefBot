@@ -136,3 +136,11 @@ No new maintenance workflow, tagging system, dashboard, or manual profile manage
 
 ### Architecture
 The Daily Brief selection logic lives in `daily_brief.py` as a separate recommendation layer. `app.py` applies that layer to the existing Telegram bot, keeping recommendation intelligence modular from the user interface and article/discussion systems.
+
+## v1.0 readiness fixes (review branch)
+
+See [V1_RELEASE_PLAN.md](V1_RELEASE_PLAN.md) for the code audit, implemented fixes,
+remaining release gates and validation limits. `/today` now restores the same
+selection for the Miami calendar day; `/next` explicitly requests another read.
+New imports remain private reader context and do not assert full coverage based
+on length. Run regressions with `python -m unittest discover -s tests -v`.

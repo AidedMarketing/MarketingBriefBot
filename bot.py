@@ -243,12 +243,16 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     article = attach_reader_context(article, uid)
-    record_activity(article["id"], "delivered", uid)
     await update.message.reply_text(
         format_article(article),
         parse_mode="HTML",
         reply_markup=article_keyboard(article),
     )
+    record_activity(article["id"], "delivered", uid)
+
+
+async def next_today(update, context):
+    await today(update, context)
 
 
 async def saved(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -429,11 +433,12 @@ async def finish_import_command(update: Update, context: ContextTypes.DEFAULT_TY
     if not article:
         await update.message.reply_text("There isn't an active article import.")
         return
+    article = attach_reader_context(article, update.effective_user.id)
     await update.message.reply_text(
-        "✅ <b>Article context imported</b>\n\n"
+        "✅ <b>Private article context imported</b>\n\n"
         f"<b>{escape(article['title'])}</b>\n"
         f"{escape(content_label(article))}\n"
-        f"🧾 {article.get('word_count') or 0:,} words\n\n"
+        f"🧾 {article.get('imported_word_count') or 0:,} imported words\n\n"
         "You can now tap 💬 Discuss on this article for a grounded conversation.",
         parse_mode="HTML",
     )
@@ -502,11 +507,11 @@ async def article_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer("Saved 🔖")
         return
     if action == "like":
-        record_activity(aid, "liked", uid, True)
+        record_activity(aid, "liked", uid)
         await q.answer("More like this 👍")
         return
     if action == "dislike":
-        record_activity(aid, "disliked", uid, True)
+        record_activity(aid, "disliked", uid)
         await q.answer("Weighted down 👎")
         return
     if action == "import":
@@ -604,7 +609,7 @@ async def document_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✅ <b>Article imported from file</b>\n\n"
         f"{escape(content_label(article))}\n"
-        f"🧾 {article.get('word_count') or 0:,} words\n\n"
+        f"🧾 {article.get('imported_word_count') or 0:,} imported words\n\n"
         "The Brief can now use this context during discussion.",
         parse_mode="HTML",
     )
@@ -687,13 +692,13 @@ def main():
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured.")
 
     init_db()
-    seed_test_article()
 
     app = Application.builder().token(TOKEN).build()
     for cmd, fn in [
         ("start", start),
         ("help", help_command),
         ("today", today),
+        ("next", next_today),
         ("saved", saved),
         ("history", history),
         ("topics", topics),
@@ -712,7 +717,7 @@ def main():
     app.add_handler(MessageHandler(filters.Document.ALL, document_import))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
 
-    print("My Marketing Brief v0.9 is running...", flush=True)
+    print("My Marketing Brief is running...", flush=True)
     app.run_polling()
 
 

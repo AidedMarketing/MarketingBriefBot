@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 import hashlib
 import os
 
@@ -30,6 +31,15 @@ def init_db() -> None:
                     reading_time INTEGER,
                     discovered_date TIMESTAMPTZ DEFAULT NOW(),
                     recommendation_score INTEGER DEFAULT 0
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS daily_briefs (
+                    user_id BIGINT NOT NULL,
+                    brief_date DATE NOT NULL,
+                    article_id BIGINT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+                    frame JSONB NOT NULL,
+                    PRIMARY KEY (user_id, brief_date)
                 )
             """)
             cur.execute("ALTER TABLE articles ADD COLUMN IF NOT EXISTS recommendation_score INTEGER DEFAULT 0")
@@ -141,6 +151,27 @@ def init_db() -> None:
                 )
             """)
 
+            cur.execute("""
+                INSERT INTO learning_memory (user_id, article_id, topic, publication, note_saved)
+                SELECT DISTINCT n.user_id, n.article_id, a.topic, a.publication, TRUE
+                FROM learning_notes n JOIN articles a ON a.id=n.article_id
+                ON CONFLICT (user_id, article_id) DO UPDATE SET note_saved=TRUE
+            """)
+
+            # Recover attributable legacy imports without deleting the originals.
+            cur.execute("""
+                SELECT user_id, article_id, buffer_text FROM import_sessions
+                WHERE active=FALSE AND LENGTH(TRIM(buffer_text)) > 0
+            """)
+            for imported in cur.fetchall():
+                text = imported["buffer_text"].strip()
+                cur.execute("""
+                    INSERT INTO reader_excerpts (user_id, article_id, excerpt_text, content_hash)
+                    VALUES (%s,%s,%s,%s)
+                    ON CONFLICT (user_id, article_id, content_hash) DO NOTHING
+                """, (imported["user_id"], imported["article_id"], text,
+                      hashlib.sha256(text.encode("utf-8")).hexdigest()))
+
 
 def seed_test_article() -> None:
     with get_connection() as conn:
@@ -232,6 +263,10 @@ def batch_upsert_articles(articles: list[dict]) -> int:
                     why_recommended=EXCLUDED.why_recommended,
                     reading_time=EXCLUDED.reading_time,
                     recommendation_score=EXCLUDED.recommendation_score
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM article_contents c
+                    WHERE c.article_id=articles.id AND c.word_count > 0
+                )
                 """,
                 articles,
             )
@@ -246,7 +281,7 @@ def find_article_by_url(url: str):
                 SELECT a.*, c.content_status, c.source_type, c.word_count,
                        c.meta_description, c.plain_text
                 FROM articles a
-                LEFT JOIN article_contents c ON c.article_id=a.id
+                LEFT JOIN article_contents c ON c.article_id=a.id AND c.source_type='public_web'
                 WHERE a.url=%s
             """, (url,))
             return cur.fetchone()
@@ -281,13 +316,17 @@ def save_article_content(
                     word_count=EXCLUDED.word_count,
                     content_hash=EXCLUDED.content_hash,
                     fetched_at=NOW()
+                WHERE (article_contents.content_status <> 'full' OR EXCLUDED.content_status='full')
+                  AND (EXCLUDED.content_status='full' OR EXCLUDED.word_count >= article_contents.word_count)
+                  AND article_contents.source_type='public_web'
+
             """, (
                 row["id"], source_type, content_status, plain_text,
                 meta_description, word_count, content_hash
             ))
 
 
-def update_learning_memory(user_id: int, article_id: int, action: str) -> None:
+def update_learning_memory(user_id: int, article_id: int, action: str, connection=None) -> None:
     field_map = {
         "delivered": "delivered_count",
         "discussed": "discussed",
@@ -305,7 +344,7 @@ def update_learning_memory(user_id: int, article_id: int, action: str) -> None:
     if not field:
         return
 
-    with get_connection() as conn:
+    with (nullcontext(connection) if connection is not None else get_connection()) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT topic, publication FROM articles WHERE id=%s", (article_id,))
             article = cur.fetchone()
@@ -424,6 +463,7 @@ def learning_memory_context(user_id: int) -> str:
 def record_activity(article_id: int, action: str, user_id: int, dedupe: bool = False) -> None:
     with get_connection() as conn:
         with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (user_id,))
             if dedupe:
                 cur.execute("""
                     SELECT 1 FROM activity
@@ -436,7 +476,7 @@ def record_activity(article_id: int, action: str, user_id: int, dedupe: bool = F
                 (article_id, action, user_id)
             )
 
-    update_learning_memory(user_id, article_id, action)
+        update_learning_memory(user_id, article_id, action, connection=conn)
 
 
 def get_article(article_id: int):
@@ -446,7 +486,7 @@ def get_article(article_id: int):
                 SELECT a.*, c.content_status, c.source_type, c.word_count,
                        c.meta_description, c.plain_text
                 FROM articles a
-                LEFT JOIN article_contents c ON c.article_id=a.id
+                LEFT JOIN article_contents c ON c.article_id=a.id AND c.source_type='public_web'
                 WHERE a.id=%s
             """, (article_id,))
             return cur.fetchone()
@@ -495,7 +535,7 @@ def get_today_article(user_id: int):
                           END
                     ) AS personalized_score
                 FROM articles a
-                LEFT JOIN article_contents c ON c.article_id=a.id
+                LEFT JOIN article_contents c ON c.article_id=a.id AND c.source_type='public_web'
                 LEFT JOIN topic_preferences tp ON tp.topic=a.topic
                 LEFT JOIN recent_deliveries rd ON rd.publication=a.publication
                 WHERE NOT EXISTS (
@@ -514,14 +554,16 @@ def get_saved_articles(user_id: int, limit: int = 10):
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT DISTINCT ON (a.id) a.*
+                SELECT a.*, saved.saved_at
                 FROM articles a
-                JOIN activity act ON act.article_id=a.id
-                WHERE act.user_id=%s AND act.action='saved'
-                ORDER BY a.id, act.created_at DESC
-            """, (user_id,))
-            rows=cur.fetchall()
-            return list(reversed(rows[-limit:]))
+                JOIN (
+                    SELECT article_id, MAX(created_at) AS saved_at
+                    FROM activity WHERE user_id=%s AND action='saved'
+                    GROUP BY article_id
+                ) saved ON saved.article_id=a.id
+                ORDER BY saved.saved_at DESC, a.id DESC LIMIT %s
+            """, (user_id, limit))
+            return cur.fetchall()
 
 
 def get_history(user_id: int, limit: int = 10):
@@ -543,18 +585,15 @@ def get_preference_summary(user_id: int):
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT a.topic,
-                    SUM(CASE WHEN act.action='liked' THEN 1 ELSE 0 END) AS likes,
-                    SUM(CASE WHEN act.action='disliked' THEN 1 ELSE 0 END) AS dislikes
-                FROM activity act
-                JOIN articles a ON a.id=act.article_id
-                WHERE act.user_id=%s AND act.action IN ('liked','disliked')
-                GROUP BY a.topic
-                ORDER BY (
-                    SUM(CASE WHEN act.action='liked' THEN 1 ELSE 0 END)
-                    - SUM(CASE WHEN act.action='disliked' THEN 1 ELSE 0 END)
-                ) DESC, a.topic
-            """,(user_id,))
+                SELECT topic,
+                    COUNT(*) FILTER (WHERE liked=TRUE) AS likes,
+                    COUNT(*) FILTER (WHERE liked=FALSE) AS dislikes
+                FROM learning_memory
+                WHERE user_id=%s AND liked IS NOT NULL
+                GROUP BY topic
+                ORDER BY (COUNT(*) FILTER (WHERE liked=TRUE)
+                          - COUNT(*) FILTER (WHERE liked=FALSE)) DESC, topic
+            """, (user_id,))
             return cur.fetchall()
 
 
@@ -640,7 +679,7 @@ def get_active_discussion(user_id: int):
                        c.meta_description, c.plain_text
                 FROM discussion_sessions ds
                 JOIN articles a ON a.id=ds.article_id
-                LEFT JOIN article_contents c ON c.article_id=a.id
+                LEFT JOIN article_contents c ON c.article_id=a.id AND c.source_type='public_web'
                 WHERE ds.user_id=%s AND ds.active=TRUE
             """,(user_id,))
             return cur.fetchone()
@@ -679,6 +718,7 @@ def save_learning_note(user_id: int, article_id: int, note: str) -> None:
                 INSERT INTO learning_notes (user_id, article_id, note)
                 VALUES (%s,%s,%s)
             """,(user_id,article_id,note))
+        update_learning_memory(user_id, article_id, "note_saved", connection=conn)
 
 
 def get_learning_notes(user_id: int, limit: int = 10):
@@ -751,22 +791,16 @@ def finish_import(user_id: int, source_type: str | None = None):
 
             text=(session["buffer_text"] or "").strip()
             words=len(text.split())
-            status="full" if words >= 350 else "partial" if words >= 40 else "metadata_only"
-            actual_source=source_type or session["source_type"]
+            if not text:
+                return None
 
+            # Imported text belongs to the reader, never the shared public article.
+            content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
             cur.execute("""
-                INSERT INTO article_contents (
-                    article_id, source_type, content_status, plain_text,
-                    meta_description, word_count, fetched_at
-                )
-                VALUES (%s,%s,%s,%s,'',%s,NOW())
-                ON CONFLICT (article_id) DO UPDATE SET
-                    source_type=EXCLUDED.source_type,
-                    content_status=EXCLUDED.content_status,
-                    plain_text=EXCLUDED.plain_text,
-                    word_count=EXCLUDED.word_count,
-                    fetched_at=NOW()
-            """,(session["article_id"],actual_source,status,text,words))
+                INSERT INTO reader_excerpts (user_id, article_id, excerpt_text, content_hash)
+                VALUES (%s,%s,%s,%s)
+                ON CONFLICT (user_id, article_id, content_hash) DO NOTHING
+            """, (user_id, session["article_id"], text, content_hash))
 
             cur.execute(
                 "UPDATE import_sessions SET active=FALSE, updated_at=NOW() WHERE user_id=%s",
@@ -777,10 +811,12 @@ def finish_import(user_id: int, source_type: str | None = None):
                 SELECT a.*, c.content_status, c.source_type, c.word_count,
                        c.meta_description, c.plain_text
                 FROM articles a
-                LEFT JOIN article_contents c ON c.article_id=a.id
+                LEFT JOIN article_contents c ON c.article_id=a.id AND c.source_type='public_web'
                 WHERE a.id=%s
             """,(session["article_id"],))
-            return cur.fetchone()
+            article = dict(cur.fetchone())
+            article["imported_word_count"] = words
+            return article
 
 
 def cancel_import(user_id: int) -> None:
