@@ -742,15 +742,15 @@ def get_related_learning_notes(user_id: int, article_id: int, limit: int = 2):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT note.note, prior.title, prior.topic, prior.publication
-                FROM learning_notes note
-                JOIN articles prior ON prior.id=note.article_id
+                SELECT ln.note, prior.title, prior.topic, prior.publication
+                FROM learning_notes ln
+                JOIN articles prior ON prior.id=ln.article_id
                 JOIN articles current_article ON current_article.id=%s
-                WHERE note.user_id=%s
-                  AND note.article_id <> current_article.id
+                WHERE ln.user_id=%s
+                  AND ln.article_id <> current_article.id
                   AND current_article.topic IS NOT NULL
                   AND prior.topic=current_article.topic
-                ORDER BY note.created_at DESC, note.id DESC
+                ORDER BY ln.created_at DESC, ln.id DESC
                 LIMIT %s
                 """,
                 (article_id, user_id, safe_limit),
