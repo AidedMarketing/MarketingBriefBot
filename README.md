@@ -13,7 +13,7 @@ A mobile-first Telegram bot for curated professional reading and active learning
 - Recommendation cards display what level of article context The Brief actually has.
 - Classification now uses word-boundary matching, so `AI` no longer matches words such as `campaign`.
 - Topic classification and recommendation reasoning use headline + description + available article text.
-- GPT-5.6 Luna is now the code fallback model.
+- GPT-6 Luna is now the code fallback model.
 - AI grounding rules are stricter: metadata-only discussions cannot be presented as article claims.
 
 ### HBR subscriber workflow
@@ -33,7 +33,8 @@ The bot does not bypass subscription authentication or redistribute full article
 - `/cancelimport` — cancel the active import
 
 ### Existing commands
-- `/today`
+- `/today` — today's saved pick (same article all day)
+- `/next` — another unseen article
 - `/saved`
 - `/history`
 - `/topics`
@@ -46,7 +47,7 @@ The bot does not bypass subscription authentication or redistribute full article
 - `TELEGRAM_BOT_TOKEN`
 - `DATABASE_URL`
 - `OPENAI_API_KEY`
-- optional `OPENAI_MODEL` (recommended: `gpt-5.6-luna`)
+- optional `OPENAI_MODEL` (recommended: `gpt-6-luna`)
 
 
 ## v0.6.1 — Extraction Integrity
