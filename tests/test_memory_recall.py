@@ -38,6 +38,7 @@ class RelatedLearningNoteTests(unittest.TestCase):
         article = {
             "id": 24,
             "title": "Current article",
+            "publication": "HBR",
             "topic": "Strategy",
             "url": "https://example.com/current",
             "content_status": "full",
