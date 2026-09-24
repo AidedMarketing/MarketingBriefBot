@@ -60,6 +60,27 @@ class DatabaseTests(unittest.TestCase):
         self.assertNotIn('frame', result)
         self.assertEqual(cursor.execute.call_count, 2)
 
+    def test_force_new_skips_daily_cache_and_excludes_delivered_articles(self):
+        article = {
+            'id': 24,
+            'title': 'A fresh read',
+            'publication': 'Marketing Brew',
+            'topic': 'Strategy',
+            'reading_time': 5,
+        }
+        connection, cursor = self.connection([article])
+
+        with patch('daily_brief.get_connection', return_value=connection):
+            result = get_today_article(1, force_new=True)
+
+        self.assertEqual(result['id'], 24)
+        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        self.assertFalse(any('FROM daily_briefs d' in statement for statement in statements))
+        candidate_sql = next(statement for statement in statements if 'WITH topic_memory' in statement)
+        self.assertIn("seen.action='delivered'", candidate_sql)
+        self.assertIn('NOT EXISTS', candidate_sql)
+
+
     def test_note_memory_uses_same_transaction(self):
         connection, _ = self.connection([])
         with patch.object(database, 'get_connection', return_value=connection), \
