@@ -38,6 +38,14 @@ class TodayDiscussionActivationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(events[:3], ["sent", "activated", "recorded"])
 
+
+    async def test_next_requests_a_fresh_unseen_pick(self):
+        update = object()
+        context = object()
+        with patch.object(app, "daily_today", new_callable=AsyncMock) as today:
+            await app.daily_next(update, context)
+        today.assert_awaited_once_with(update, context, force_new=True)
+
     async def test_failed_telegram_send_does_not_activate_undelivered_article(self):
         article = {"id": 42, "content_status": "full"}
         update = SimpleNamespace(
