@@ -191,6 +191,7 @@ def _article_context(article: dict, user_message: str = "") -> str:
         f"Description: {description or '(none)'}\n"
         f"Article text/context:\n{body_for_model or '(none)'}\n\n"
         f"Reader-supplied excerpts:\n{excerpt_text or '(none)'}"
+        f"{memory_section}"
     )
 
 
