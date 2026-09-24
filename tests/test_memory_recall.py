@@ -18,9 +18,9 @@ class RelatedLearningNoteTests(unittest.TestCase):
 
         self.assertEqual(rows, [{"note": "A saved idea", "title": "Earlier article"}])
         query, params = cursor.execute.call_args.args
-        self.assertIn("note.user_id=%s", query)
+        self.assertIn("ln.user_id=%s", query)
         self.assertIn("prior.topic=current_article.topic", query)
-        self.assertIn("note.article_id <> current_article.id", query)
+        self.assertIn("ln.article_id <> current_article.id", query)
         self.assertEqual(params, (24, 9, 3))
 
     def test_bot_attaches_only_a_small_note_set(self):
@@ -33,6 +33,20 @@ class RelatedLearningNoteTests(unittest.TestCase):
         lookup.assert_called_once_with(9, 24, limit=2)
         self.assertEqual(enriched["related_learning_notes"], notes)
         self.assertNotIn("related_learning_notes", article)
+
+
+    def test_metadata_only_context_does_not_claim_article_specific_evidence(self):
+        context = ai_provider._article_context({
+            "id": 30,
+            "title": "Article without stored text",
+            "publication": "MIT Sloan",
+            "topic": "Strategy",
+            "url": "https://example.com/metadata",
+            "content_status": "metadata_only",
+        })
+
+        self.assertIn("METADATA ONLY", context)
+        self.assertIn("Do not say 'the article argues'", context)
 
     def test_model_context_separates_prior_notes_from_article_evidence(self):
         article = {
