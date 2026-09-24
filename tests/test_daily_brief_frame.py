@@ -13,9 +13,9 @@ class DailyBriefFrameTests(unittest.TestCase):
             "topic_engaged": 0,
         })
 
-        self.assertIn("product name", frame["daily_reason"])
+        self.assertIn("positioning work", frame["daily_reason"])
         self.assertIn("vehicle", frame["learning_objective"])
-        self.assertIn("intended buyer", frame["learning_objective"])
+        self.assertIn("buyer research", frame["learning_objective"])
         self.assertNotIn("repetition penalty", frame["daily_reason"])
 
     def test_general_card_uses_a_practical_decision_focus(self):
@@ -26,7 +26,7 @@ class DailyBriefFrameTests(unittest.TestCase):
 
         self.assertIn("Leadership", frame["daily_reason"])
         self.assertIn("decision or trade-off", frame["learning_objective"])
-        self.assertIn("adapt", frame["learning_objective"])
+        self.assertIn("applying the same approach", frame["learning_objective"])
 
 
 if __name__ == "__main__":
