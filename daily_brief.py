@@ -151,12 +151,12 @@ def _daily_brief_copy(article: dict) -> dict:
 
     if any(term in title for term in ("name", "naming", "brand", "position")) or "brand" in normalized_topic:
         reason = (
-            "This turns brand strategy into a concrete case: what a product name "
-            "needs to signal as its market changes."
+            "As the EV market shifts, a vehicle name is doing positioning work: "
+            "helping buyers understand who the model is for and what sets it apart."
         )
         objective = (
-            "Notice what the name signals about the vehicle and its intended buyer. "
-            "Does it make the product clear and distinct?"
+            "Connect the buyer research behind a name to the promise it makes. "
+            "Does that promise help the vehicle stand out while still telling buyers what to expect?"
         )
     elif "strateg" in title or "strateg" in normalized_topic:
         reason = (
@@ -169,12 +169,12 @@ def _daily_brief_copy(article: dict) -> dict:
         )
     elif topic:
         reason = (
-            f"This brings {topic} into a current business setting, with a practical "
-            "decision you can compare with your own work."
+            f"This makes {topic} concrete through a business choice with practical "
+            "consequences you can compare with your own work."
         )
         objective = (
-            "Look for the main decision or trade-off, what evidence supports it, "
-            "and one part you could adapt in your own work."
+            "Identify the decision being made and the evidence or assumptions behind it. "
+            "What would you need to know before applying the same approach at work?"
         )
     else:
         reason = "This is a current business example with a decision worth examining."
