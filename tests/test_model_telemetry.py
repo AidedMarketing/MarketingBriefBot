@@ -24,6 +24,8 @@ class ModelTelemetryTests(unittest.TestCase):
         self.assertEqual(record.input_tokens, 42)
         self.assertEqual(record.output_tokens, 13)
         self.assertGreaterEqual(record.request_duration_ms, 0)
+        self.assertIn("model=gpt-6-luna", captured.output[0])
+        self.assertIn("input_tokens=42", captured.output[0])
         self.assertNotIn("private user prompt", captured.output[0])
 
 
