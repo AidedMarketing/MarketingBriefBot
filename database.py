@@ -735,6 +735,29 @@ def get_learning_notes(user_id: int, limit: int = 10):
             return cur.fetchall()
 
 
+def get_related_learning_notes(user_id: int, article_id: int, limit: int = 2):
+    """Return only this user's recent saved notes from the current article's topic."""
+    safe_limit = max(1, min(int(limit), 3))
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT note.note, prior.title, prior.topic, prior.publication
+                FROM learning_notes note
+                JOIN articles prior ON prior.id=note.article_id
+                JOIN articles current_article ON current_article.id=%s
+                WHERE note.user_id=%s
+                  AND note.article_id <> current_article.id
+                  AND current_article.topic IS NOT NULL
+                  AND prior.topic=current_article.topic
+                ORDER BY note.created_at DESC, note.id DESC
+                LIMIT %s
+                """,
+                (article_id, user_id, safe_limit),
+            )
+            return cur.fetchall()
+
+
 def start_import(user_id: int, article_id: int, source_type: str = "user_paste") -> None:
     with get_connection() as conn:
         with conn.cursor() as cur:
