@@ -233,7 +233,11 @@ def _call_openai(instructions: str, prompt: str, max_output_tokens: int = 1600) 
 
         usage = payload.get("usage") or {}
         logger.info(
-            "OpenAI Responses call completed",
+            "OpenAI Responses call completed model=%s duration_ms=%s input_tokens=%s output_tokens=%s",
+            OPENAI_MODEL,
+            round((time.monotonic() - started) * 1000),
+            usage.get("input_tokens"),
+            usage.get("output_tokens"),
             extra={
                 "model_name": OPENAI_MODEL,
                 "request_duration_ms": round((time.monotonic() - started) * 1000),
@@ -244,7 +248,11 @@ def _call_openai(instructions: str, prompt: str, max_output_tokens: int = 1600) 
         return text
     except Exception as exc:
         logger.error(
-            "OpenAI Responses call failed",
+            "OpenAI Responses call failed model=%s duration_ms=%s status=%s error_type=%s",
+            OPENAI_MODEL,
+            round((time.monotonic() - started) * 1000),
+            getattr(response, "status_code", None),
+            type(exc).__name__,
             extra={
                 "model_name": OPENAI_MODEL,
                 "request_duration_ms": round((time.monotonic() - started) * 1000),
