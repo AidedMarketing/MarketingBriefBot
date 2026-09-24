@@ -19,6 +19,7 @@ class DailyDeliveryTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(app, '_schedule_source_refresh'), patch.object(app, '_schedule_article_enrichment'), \
              patch.object(app, 'get_daily_article', return_value=article), \
              patch.object(app.bot, 'attach_reader_context', side_effect=lambda a, u: a), \
+             patch.object(app.bot, 'article_keyboard', return_value=None), \
              patch.object(app.bot, 'start_discussion', side_effect=lambda *a: events.append('activated')), \
              patch.object(app.bot, 'record_activity', side_effect=lambda *a: events.append('recorded')) as record:
             if fail:
