@@ -16,7 +16,8 @@ class DailyDeliveryTests(unittest.IsolatedAsyncioTestCase):
         events = []
         if not fail:
             message.reply_text.side_effect = lambda *a, **kw: events.append('sent')
-        with patch.object(app.bot, 'refresh_sources'), patch.object(app, 'get_daily_article', return_value=article), \
+        with patch.object(app, '_schedule_source_refresh'), patch.object(app, '_schedule_article_enrichment'), \
+             patch.object(app, 'get_daily_article', return_value=article), \
              patch.object(app.bot, 'attach_reader_context', side_effect=lambda a, u: a), \
              patch.object(app.bot, 'start_discussion', side_effect=lambda *a: events.append('activated')), \
              patch.object(app.bot, 'record_activity', side_effect=lambda *a: events.append('recorded')) as record:
@@ -44,11 +45,17 @@ class DatabaseTests(unittest.TestCase):
         cursor.fetchone.side_effect = rows
         return connection, cursor
 
-    def test_daily_selection_restores_original_explanation(self):
-        connection, cursor = self.connection([{'id': 7, 'frame': {'daily_reason': 'Original reason'}}])
+    def test_daily_selection_refreshes_reader_facing_explanation(self):
+        connection, cursor = self.connection([{
+            'id': 7,
+            'title': 'Brand Strategy: EV naming',
+            'topic': 'Brand Strategy',
+            'frame': {'daily_reason': 'Old scoring explanation'},
+        }])
         with patch('daily_brief.get_connection', return_value=connection):
             result = get_today_article(1)
-        self.assertEqual(result['daily_reason'], 'Original reason')
+        self.assertIn('positioning work', result['daily_reason'])
+        self.assertNotIn('Old scoring explanation', result['daily_reason'])
         self.assertNotIn('frame', result)
         self.assertEqual(cursor.execute.call_count, 2)
 
