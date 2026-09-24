@@ -30,7 +30,10 @@ def _schedule_source_refresh():
         try:
             result = await asyncio.to_thread(bot.refresh_sources, False)
             logger.info(
-                "Background source refresh completed",
+                "Background source refresh completed duration_ms=%s found=%s added=%s",
+                round((time.monotonic() - started) * 1000),
+                result.get("found") if isinstance(result, dict) else None,
+                result.get("added") if isinstance(result, dict) else None,
                 extra={
                     "duration_ms": round((time.monotonic() - started) * 1000),
                     "found_count": result.get("found") if isinstance(result, dict) else None,
@@ -56,7 +59,9 @@ def _schedule_article_enrichment(article: dict):
         try:
             await asyncio.to_thread(bot.enrich_article, article)
             logger.info(
-                "Background article enrichment completed",
+                "Background article enrichment completed article_id=%s duration_ms=%s",
+                article_id,
+                round((time.monotonic() - started) * 1000),
                 extra={
                     "article_id": article_id,
                     "duration_ms": round((time.monotonic() - started) * 1000),
@@ -95,7 +100,10 @@ async def daily_today(update, context, force_new=False):
         reply_markup=bot.article_keyboard(article),
     )
     logger.info(
-        "Daily recommendation card sent",
+        "Daily recommendation card sent article_id=%s force_new=%s duration_ms=%s",
+        article["id"],
+        force_new,
+        round((time.monotonic() - started) * 1000),
         extra={
             "article_id": article["id"],
             "force_new": force_new,
