@@ -28,7 +28,10 @@ def get_today_article(user_id: int, force_new: bool = False):
                 existing = cur.fetchone()
                 if existing:
                     article = dict(existing)
-                    article.update(article.pop("frame"))
+                    article.update(article.pop("frame") or {})
+                    # Refresh the user-facing explanation for the cached daily pick.
+                    # The article stays stable for the day, while improved copy applies immediately.
+                    article.update(_daily_brief_copy(article))
                     return article
             cur.execute(
                 """
@@ -140,6 +143,49 @@ def get_today_article(user_id: int, force_new: bool = False):
     return article
 
 
+def _daily_brief_copy(article: dict) -> dict:
+    """Explain the recommendation and give a practical, article-specific reading lens."""
+    title = (article.get("title") or "").lower()
+    topic = (article.get("topic") or "").strip()
+    normalized_topic = topic.lower()
+
+    if any(term in title for term in ("name", "naming", "brand", "position")) or "brand" in normalized_topic:
+        reason = (
+            "As the EV market shifts, a vehicle name is doing positioning work: "
+            "helping buyers understand who the model is for and what sets it apart."
+        )
+        objective = (
+            "Connect the buyer research behind a name to the promise it makes. "
+            "Does that promise help the vehicle stand out while still telling buyers what to expect?"
+        )
+    elif "strateg" in title or "strateg" in normalized_topic:
+        reason = (
+            "This puts strategy in a real market context, so you can compare the "
+            "reasoning with decisions in your own work."
+        )
+        objective = (
+            "Identify the choice being made, what changed around it, and what "
+            "evidence would support the same move in your work."
+        )
+    elif topic:
+        reason = (
+            f"This makes {topic} concrete through a business choice with practical "
+            "consequences you can compare with your own work."
+        )
+        objective = (
+            "Identify the decision being made and the evidence or assumptions behind it. "
+            "What would you need to know before applying the same approach at work?"
+        )
+    else:
+        reason = "This is a current business example with a decision worth examining."
+        objective = (
+            "Look for the main decision or trade-off, what evidence supports it, "
+            "and one part you could adapt in your own work."
+        )
+
+    return {"daily_reason": reason, "learning_objective": objective}
+
+
 def _daily_brief_frame(article: dict) -> dict:
     exposure = int(article.get("topic_exposure") or 0)
     engaged = int(article.get("topic_engaged") or 0)
@@ -147,31 +193,18 @@ def _daily_brief_frame(article: dict) -> dict:
     dislikes = int(article.get("topic_dislikes") or 0)
     max_exposure = int(article.get("max_topic_exposure") or 0)
     recent_topic = int(article.get("recent_topic_count") or 0)
-    recent_pub = int(article.get("recent_pub_count") or 0)
-    topic = article.get("topic") or "this topic"
 
     if max_exposure >= 2 and exposure == 0:
-        reason = f"You've built momentum in other areas, so today's read broadens the mix with {topic}."
         mode = "Broaden"
     elif likes > dislikes and engaged > 0 and recent_topic < 2:
-        reason = f"You've engaged positively with {topic}; this continues that thread without overloading it."
         mode = "Deepen"
-    elif recent_pub >= 2:
-        reason = "This source has appeared recently; this article still ranks highest after the source repetition penalty."
-        mode = "Explore"
     elif recent_topic >= 2:
-        reason = f"You've seen {topic} recently, but this still earned today's spot on relevance."
         mode = "Revisit"
     else:
-        reason = "This is the strongest current fit across relevance and your developing reading pattern."
         mode = "Explore"
 
-    objective = f"Read for one idea in {topic} that changes, sharpens, or challenges how you would approach real work."
-    return {
-        "daily_reason": reason,
-        "learning_objective": objective,
-        "reading_mode": mode,
-    }
+    return {**_daily_brief_copy(article), "reading_mode": mode}
+
 
 
 def format_article(article: dict, content_label_fn, heading: str = "Today's Brief") -> str:
