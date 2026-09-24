@@ -18,6 +18,7 @@ class DailyDeliveryTests(unittest.IsolatedAsyncioTestCase):
             message.reply_text.side_effect = lambda *a, **kw: events.append('sent')
         with patch.object(app.bot, 'refresh_sources'), patch.object(app, 'get_daily_article', return_value=article), \
              patch.object(app.bot, 'attach_reader_context', side_effect=lambda a, u: a), \
+             patch.object(app.bot, 'start_discussion', side_effect=lambda *a: events.append('activated')), \
              patch.object(app.bot, 'record_activity', side_effect=lambda *a: events.append('recorded')) as record:
             if fail:
                 with self.assertRaises(RuntimeError):
@@ -25,7 +26,7 @@ class DailyDeliveryTests(unittest.IsolatedAsyncioTestCase):
                 record.assert_not_called()
             else:
                 await app.daily_today(update, None)
-                self.assertEqual(events, ['sent', 'recorded'])
+                self.assertEqual(events, ['sent', 'activated', 'recorded'])
                 record.assert_called_once_with(7, 'delivered', 1, True)
 
     async def test_failed_send_does_not_consume_article(self):
@@ -81,7 +82,8 @@ class DatabaseTests(unittest.TestCase):
     def test_repeated_source_does_not_claim_rotation(self):
         result = _daily_brief_frame({'recent_pub_count': 3, 'topic': 'Strategy'})
         self.assertNotEqual(result['reading_mode'], 'Balance')
-        self.assertIn('appeared recently', result['daily_reason'])
+        self.assertNotIn('penalty', result['daily_reason'].lower())
+        self.assertIn('strategy', result['daily_reason'].lower())
 
 
 if __name__ == '__main__':
