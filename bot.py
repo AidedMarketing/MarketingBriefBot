@@ -34,6 +34,7 @@ from database import (
     get_preference_summary,
     get_reader_excerpt_count,
     get_reader_excerpts,
+    get_related_learning_notes,
     get_saved_articles,
     get_today_article,
     init_db,
@@ -116,6 +117,17 @@ def attach_reader_context(article: dict, user_id: int):
     return enriched
 
 
+def attach_related_learning_notes(article: dict, user_id: int):
+    """Attach a small set of this user's saved notes from the same topic."""
+    if not article:
+        return article
+    enriched = dict(article)
+    enriched["related_learning_notes"] = get_related_learning_notes(
+        user_id, article["id"], limit=2
+    )
+    return enriched
+
+
 def looks_like_reader_excerpt(text: str) -> bool:
     stripped = (text or "").strip()
     words = stripped.split()
@@ -187,7 +199,8 @@ def format_article(article: dict, heading: str = "Today's Recommended Read") -> 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📚 Welcome to My Marketing Brief.\n\n"
-        "/today — Next recommended read\n"
+        "/today — Today's pick (same article all day)\n"
+        "/next — Another unseen article\n"
         "/saved — Saved articles\n"
         "/history — Recent recommendations\n"
         "/topics — Preference signals\n"
@@ -696,6 +709,11 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("➕ Added this passage as reader context for the active article.")
 
     session = attach_reader_context(session, uid)
+    try:
+        session = attach_related_learning_notes(session, uid)
+    except Exception:
+        # Keep discussion available if the optional memory lookup fails.
+        session["related_learning_notes"] = []
     add_discussion_message(uid, session["id"], "user", user_text)
     record_activity(session["id"], "discussion_turn", uid)
     history_rows = get_discussion_history(uid, session["id"])
