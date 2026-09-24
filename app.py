@@ -76,6 +76,12 @@ async def daily_today(update, context, force_new=False):
         parse_mode="HTML",
         reply_markup=bot.article_keyboard(article),
     )
+    # A delivered /today card becomes the active discussion so a direct reply
+    # naturally stays grounded in the article the user just received.
+    try:
+        await asyncio.to_thread(bot.start_discussion, uid, article["id"])
+    except Exception:
+        logger.exception("Could not activate discussion for article %s", article["id"])
     await asyncio.to_thread(bot.record_activity, article["id"], "delivered", uid, True)
 
 
