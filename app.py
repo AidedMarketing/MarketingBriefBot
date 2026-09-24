@@ -1,8 +1,56 @@
 import asyncio
+import logging
+import time
 
 import bot
 from daily_brief import format_article as format_daily_article
 from daily_brief import get_today_article as get_daily_article
+
+logger = logging.getLogger(__name__)
+
+_REFRESH_COOLDOWN_SECONDS = 300
+_last_refresh_started = 0.0
+_refresh_task = None
+_enriching_article_ids = set()
+
+
+def _schedule_source_refresh():
+    """Refresh publication discovery in the background, coalescing /today calls."""
+    global _last_refresh_started, _refresh_task
+    now = time.monotonic()
+    if _refresh_task is not None and not _refresh_task.done():
+        return
+    if now - _last_refresh_started < _REFRESH_COOLDOWN_SECONDS:
+        return
+
+    _last_refresh_started = now
+
+    async def refresh():
+        try:
+            await asyncio.to_thread(bot.refresh_sources, False)
+        except Exception:
+            logger.exception("Background source refresh failed")
+
+    _refresh_task = asyncio.create_task(refresh())
+
+
+def _schedule_article_enrichment(article: dict):
+    """Enrich a selected article without holding up its recommendation card."""
+    article_id = article.get("id")
+    if article_id is None or article_id in _enriching_article_ids:
+        return
+
+    _enriching_article_ids.add(article_id)
+
+    async def enrich():
+        try:
+            await asyncio.to_thread(bot.enrich_article, article)
+        except Exception:
+            logger.exception("Background enrichment failed for article %s", article_id)
+        finally:
+            _enriching_article_ids.discard(article_id)
+
+    asyncio.create_task(enrich())
 
 
 def _format_article(article: dict, heading: str = "Today's Brief") -> str:
@@ -12,26 +60,15 @@ def _format_article(article: dict, heading: str = "Today's Brief") -> str:
 async def daily_today(update, context, force_new=False):
     uid = update.effective_user.id
 
-    # Keep discovery lightweight; only deep-fetch the selected article.
-    try:
-        await asyncio.wait_for(asyncio.to_thread(bot.refresh_sources, False), timeout=20)
-    except asyncio.TimeoutError:
-        pass
-
+    # Return the persisted daily card promptly; source discovery is opportunistic.
+    _schedule_source_refresh()
     article = await asyncio.to_thread(get_daily_article, uid, force_new)
     if not article:
         await update.message.reply_text("You've reached the end of the current queue. Try /refresh.")
         return
 
     if (article.get("content_status") or "metadata_only") != "full":
-        try:
-            await asyncio.wait_for(asyncio.to_thread(bot.enrich_article, article), timeout=12)
-            fresh = await asyncio.to_thread(bot.get_article, article["id"])
-            if fresh:
-                # Refresh content fields without discarding the recommendation explanation.
-                article.update(dict(fresh))
-        except asyncio.TimeoutError:
-            pass
+        _schedule_article_enrichment(article)
 
     article = await asyncio.to_thread(bot.attach_reader_context, article, uid)
     await update.message.reply_text(
@@ -39,6 +76,12 @@ async def daily_today(update, context, force_new=False):
         parse_mode="HTML",
         reply_markup=bot.article_keyboard(article),
     )
+    # A delivered /today card becomes the active discussion so a direct reply
+    # naturally stays grounded in the article the user just received.
+    try:
+        await asyncio.to_thread(bot.start_discussion, uid, article["id"])
+    except Exception:
+        logger.exception("Could not activate discussion for article %s", article["id"])
     await asyncio.to_thread(bot.record_activity, article["id"], "delivered", uid, True)
 
 
