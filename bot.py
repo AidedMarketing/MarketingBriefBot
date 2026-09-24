@@ -1,5 +1,6 @@
 import asyncio
 import io
+import logging
 import os
 import re
 from html import escape
@@ -46,6 +47,8 @@ from database import (
 )
 from importer import ingest_shared_url, source_for_url
 from sources import enrich_article, refresh_sources
+
+logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -713,6 +716,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session = attach_related_learning_notes(session, uid)
     except Exception:
         # Keep discussion available if the optional memory lookup fails.
+        logger.exception("Related learning note lookup failed")
         session["related_learning_notes"] = []
     add_discussion_message(uid, session["id"], "user", user_text)
     record_activity(session["id"], "discussion_turn", uid)
