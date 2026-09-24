@@ -25,7 +25,7 @@ class DailyBriefFrameTests(unittest.TestCase):
         })
 
         self.assertIn("Leadership", frame["daily_reason"])
-        self.assertIn("decision or trade-off", frame["learning_objective"])
+        self.assertIn("decision being made", frame["learning_objective"])
         self.assertIn("applying the same approach", frame["learning_objective"])
 
 
