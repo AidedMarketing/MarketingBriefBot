@@ -38,6 +38,29 @@ class TodayDiscussionActivationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(events[:3], ["sent", "activated", "recorded"])
 
+
+    async def test_empty_queue_explains_how_to_discover_more(self):
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=7),
+            message=SimpleNamespace(reply_text=AsyncMock()),
+        )
+        with (
+            patch.object(app, "_schedule_source_refresh"),
+            patch.object(app, "get_daily_article", return_value=None),
+        ):
+            await app.daily_today(update, None)
+
+        update.message.reply_text.assert_awaited_once_with(
+            "You've reached the end of the current queue. Try /refresh."
+        )
+
+    async def test_next_requests_a_fresh_unseen_pick(self):
+        update = object()
+        context = object()
+        with patch.object(app, "daily_today", new_callable=AsyncMock) as today:
+            await app.daily_next(update, context)
+        today.assert_awaited_once_with(update, context, force_new=True)
+
     async def test_failed_telegram_send_does_not_activate_undelivered_article(self):
         article = {"id": 42, "content_status": "full"}
         update = SimpleNamespace(

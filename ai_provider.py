@@ -1,12 +1,15 @@
+import logging
 import os
 import re
+import time
 from typing import Iterable
 
 import httpx
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-6-luna")
 OPENAI_URL = "https://api.openai.com/v1/responses"
+logger = logging.getLogger(__name__)
 
 
 class AIUnavailable(RuntimeError):
@@ -159,6 +162,24 @@ def _article_context(article: dict, user_message: str = "") -> str:
             excerpt_blocks.append(f"[Reader excerpt {idx}]\n{text_value}")
         excerpt_text = "\n\n".join(excerpt_blocks)
 
+    related_notes = article.get("related_learning_notes") or []
+    note_blocks = []
+    for note in related_notes[:3]:
+        if isinstance(note, dict):
+            note_title = (note.get("title") or "Saved learning note").strip()
+            note_text = (note.get("note") or "").strip()
+            note_blocks.append(f"[{note_title}]\n{note_text[:1200]}")
+        elif str(note).strip():
+            note_blocks.append(str(note).strip()[:1200])
+    related_note_text = "\n\n".join(note_blocks)
+
+    memory_section = ""
+    if related_note_text:
+        memory_section = (
+            "\n\nPrior notes from this reader (personal context only; not evidence about this article):\n"
+            + related_note_text
+        )
+
     return (
         f"Title: {article['title']}\n"
         f"Publication: {article['publication']}\n"
@@ -170,6 +191,7 @@ def _article_context(article: dict, user_message: str = "") -> str:
         f"Description: {description or '(none)'}\n"
         f"Article text/context:\n{body_for_model or '(none)'}\n\n"
         f"Reader-supplied excerpts:\n{excerpt_text or '(none)'}"
+        f"{memory_section}"
     )
 
 
@@ -186,25 +208,59 @@ def _call_openai(instructions: str, prompt: str, max_output_tokens: int = 1600) 
     if not OPENAI_API_KEY:
         raise AIUnavailable("OPENAI_API_KEY is not configured.")
 
-    response = httpx.post(
-        OPENAI_URL,
-        headers={
-            "Authorization": "Bearer " + OPENAI_API_KEY,
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": OPENAI_MODEL,
-            "instructions": instructions,
-            "input": prompt,
-            "max_output_tokens": max_output_tokens,
-        },
-        timeout=45.0,
-    )
-    response.raise_for_status()
-    text = _extract_output_text(response.json())
-    if not text:
-        raise AIUnavailable("The AI provider returned no text.")
-    return text
+    started = time.monotonic()
+    response = None
+    try:
+        response = httpx.post(
+            OPENAI_URL,
+            headers={
+                "Authorization": "Bearer " + OPENAI_API_KEY,
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": OPENAI_MODEL,
+                "instructions": instructions,
+                "input": prompt,
+                "max_output_tokens": max_output_tokens,
+            },
+            timeout=45.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        text = _extract_output_text(payload)
+        if not text:
+            raise AIUnavailable("The AI provider returned no text.")
+
+        usage = payload.get("usage") or {}
+        logger.info(
+            "OpenAI Responses call completed model=%s duration_ms=%s input_tokens=%s output_tokens=%s",
+            OPENAI_MODEL,
+            round((time.monotonic() - started) * 1000),
+            usage.get("input_tokens"),
+            usage.get("output_tokens"),
+            extra={
+                "model_name": OPENAI_MODEL,
+                "request_duration_ms": round((time.monotonic() - started) * 1000),
+                "input_tokens": usage.get("input_tokens"),
+                "output_tokens": usage.get("output_tokens"),
+            },
+        )
+        return text
+    except Exception as exc:
+        logger.error(
+            "OpenAI Responses call failed model=%s duration_ms=%s status=%s error_type=%s",
+            OPENAI_MODEL,
+            round((time.monotonic() - started) * 1000),
+            getattr(response, "status_code", None),
+            type(exc).__name__,
+            extra={
+                "model_name": OPENAI_MODEL,
+                "request_duration_ms": round((time.monotonic() - started) * 1000),
+                "http_status": getattr(response, "status_code", None),
+                "error_type": type(exc).__name__,
+            },
+        )
+        raise
 
 
 def discuss(article: dict, history: list[dict], user_message: str) -> str:
@@ -216,6 +272,7 @@ def discuss(article: dict, history: list[dict], user_message: str) -> str:
         "If context is metadata-only, distinguish article-grounded observations from general topic analysis. "
         "If context is partial, do not repeatedly warn about partial access; mention it only when it matters to the question. "
         "Never invent an article's thesis, examples, evidence, or conclusions. "
+        "Use supplied prior learning notes only for a useful personal connection; never attribute them to this article. "
         "If deeper article-specific analysis requires missing text, ask the user to import or paste the relevant passage. "
         "Do not reproduce long copyrighted passages."
     )

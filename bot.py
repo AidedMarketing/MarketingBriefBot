@@ -1,5 +1,6 @@
 import asyncio
 import io
+import logging
 import os
 import re
 from html import escape
@@ -34,6 +35,7 @@ from database import (
     get_preference_summary,
     get_reader_excerpt_count,
     get_reader_excerpts,
+    get_related_learning_notes,
     get_saved_articles,
     get_today_article,
     init_db,
@@ -45,6 +47,8 @@ from database import (
 )
 from importer import ingest_shared_url, source_for_url
 from sources import enrich_article, refresh_sources
+
+logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -113,6 +117,17 @@ def attach_reader_context(article: dict, user_id: int):
     enriched = dict(article)
     enriched["reader_excerpts"] = get_reader_excerpts(user_id, article["id"])
     enriched["reader_excerpt_count"] = get_reader_excerpt_count(user_id, article["id"])
+    return enriched
+
+
+def attach_related_learning_notes(article: dict, user_id: int):
+    """Attach a small set of this user's saved notes from the same topic."""
+    if not article:
+        return article
+    enriched = dict(article)
+    enriched["related_learning_notes"] = get_related_learning_notes(
+        user_id, article["id"], limit=2
+    )
     return enriched
 
 
@@ -187,7 +202,8 @@ def format_article(article: dict, heading: str = "Today's Recommended Read") -> 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📚 Welcome to My Marketing Brief.\n\n"
-        "/today — Next recommended read\n"
+        "/today — Today's pick (same article all day)\n"
+        "/next — Another unseen article\n"
         "/saved — Saved articles\n"
         "/history — Recent recommendations\n"
         "/topics — Preference signals\n"
@@ -696,6 +712,12 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("➕ Added this passage as reader context for the active article.")
 
     session = attach_reader_context(session, uid)
+    try:
+        session = attach_related_learning_notes(session, uid)
+    except Exception:
+        # Keep discussion available if the optional memory lookup fails.
+        logger.exception("Related learning note lookup failed")
+        session["related_learning_notes"] = []
     add_discussion_message(uid, session["id"], "user", user_text)
     record_activity(session["id"], "discussion_turn", uid)
     history_rows = get_discussion_history(uid, session["id"])

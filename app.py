@@ -26,8 +26,20 @@ def _schedule_source_refresh():
     _last_refresh_started = now
 
     async def refresh():
+        started = time.monotonic()
         try:
-            await asyncio.to_thread(bot.refresh_sources, False)
+            result = await asyncio.to_thread(bot.refresh_sources, False)
+            logger.info(
+                "Background source refresh completed duration_ms=%s found=%s added=%s",
+                round((time.monotonic() - started) * 1000),
+                result.get("found") if isinstance(result, dict) else None,
+                result.get("added") if isinstance(result, dict) else None,
+                extra={
+                    "duration_ms": round((time.monotonic() - started) * 1000),
+                    "found_count": result.get("found") if isinstance(result, dict) else None,
+                    "added_count": result.get("added") if isinstance(result, dict) else None,
+                },
+            )
         except Exception:
             logger.exception("Background source refresh failed")
 
@@ -43,8 +55,18 @@ def _schedule_article_enrichment(article: dict):
     _enriching_article_ids.add(article_id)
 
     async def enrich():
+        started = time.monotonic()
         try:
             await asyncio.to_thread(bot.enrich_article, article)
+            logger.info(
+                "Background article enrichment completed article_id=%s duration_ms=%s",
+                article_id,
+                round((time.monotonic() - started) * 1000),
+                extra={
+                    "article_id": article_id,
+                    "duration_ms": round((time.monotonic() - started) * 1000),
+                },
+            )
         except Exception:
             logger.exception("Background enrichment failed for article %s", article_id)
         finally:
@@ -59,6 +81,7 @@ def _format_article(article: dict, heading: str = "Today's Brief") -> str:
 
 async def daily_today(update, context, force_new=False):
     uid = update.effective_user.id
+    started = time.monotonic()
 
     # Return the persisted daily card promptly; source discovery is opportunistic.
     _schedule_source_refresh()
@@ -75,6 +98,17 @@ async def daily_today(update, context, force_new=False):
         _format_article(article),
         parse_mode="HTML",
         reply_markup=bot.article_keyboard(article),
+    )
+    logger.info(
+        "Daily recommendation card sent article_id=%s force_new=%s duration_ms=%s",
+        article["id"],
+        force_new,
+        round((time.monotonic() - started) * 1000),
+        extra={
+            "article_id": article["id"],
+            "force_new": force_new,
+            "duration_ms": round((time.monotonic() - started) * 1000),
+        },
     )
     # A delivered /today card becomes the active discussion so a direct reply
     # naturally stays grounded in the article the user just received.

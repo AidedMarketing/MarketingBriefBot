@@ -16,8 +16,11 @@ class DailyDeliveryTests(unittest.IsolatedAsyncioTestCase):
         events = []
         if not fail:
             message.reply_text.side_effect = lambda *a, **kw: events.append('sent')
-        with patch.object(app.bot, 'refresh_sources'), patch.object(app, 'get_daily_article', return_value=article), \
+        with patch.object(app, '_schedule_source_refresh'), patch.object(app, '_schedule_article_enrichment'), \
+             patch.object(app, 'get_daily_article', return_value=article), \
              patch.object(app.bot, 'attach_reader_context', side_effect=lambda a, u: a), \
+             patch.object(app.bot, 'article_keyboard', return_value=None), \
+             patch.object(app.bot, 'start_discussion', side_effect=lambda *a: events.append('activated')), \
              patch.object(app.bot, 'record_activity', side_effect=lambda *a: events.append('recorded')) as record:
             if fail:
                 with self.assertRaises(RuntimeError):
@@ -25,7 +28,7 @@ class DailyDeliveryTests(unittest.IsolatedAsyncioTestCase):
                 record.assert_not_called()
             else:
                 await app.daily_today(update, None)
-                self.assertEqual(events, ['sent', 'recorded'])
+                self.assertEqual(events, ['sent', 'activated', 'recorded'])
                 record.assert_called_once_with(7, 'delivered', 1, True)
 
     async def test_failed_send_does_not_consume_article(self):
@@ -43,13 +46,40 @@ class DatabaseTests(unittest.TestCase):
         cursor.fetchone.side_effect = rows
         return connection, cursor
 
-    def test_daily_selection_restores_original_explanation(self):
-        connection, cursor = self.connection([{'id': 7, 'frame': {'daily_reason': 'Original reason'}}])
+    def test_daily_selection_refreshes_reader_facing_explanation(self):
+        connection, cursor = self.connection([{
+            'id': 7,
+            'title': 'Brand Strategy: EV naming',
+            'topic': 'Brand Strategy',
+            'frame': {'daily_reason': 'Old scoring explanation'},
+        }])
         with patch('daily_brief.get_connection', return_value=connection):
             result = get_today_article(1)
-        self.assertEqual(result['daily_reason'], 'Original reason')
+        self.assertIn('positioning work', result['daily_reason'])
+        self.assertNotIn('Old scoring explanation', result['daily_reason'])
         self.assertNotIn('frame', result)
         self.assertEqual(cursor.execute.call_count, 2)
+
+    def test_force_new_skips_daily_cache_and_excludes_delivered_articles(self):
+        article = {
+            'id': 24,
+            'title': 'A fresh read',
+            'publication': 'Marketing Brew',
+            'topic': 'Strategy',
+            'reading_time': 5,
+        }
+        connection, cursor = self.connection([article])
+
+        with patch('daily_brief.get_connection', return_value=connection):
+            result = get_today_article(1, force_new=True)
+
+        self.assertEqual(result['id'], 24)
+        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        self.assertFalse(any('FROM daily_briefs d' in statement for statement in statements))
+        candidate_sql = next(statement for statement in statements if 'WITH topic_memory' in statement)
+        self.assertIn("seen.action='delivered'", candidate_sql)
+        self.assertIn('NOT EXISTS', candidate_sql)
+
 
     def test_note_memory_uses_same_transaction(self):
         connection, _ = self.connection([])
@@ -81,7 +111,8 @@ class DatabaseTests(unittest.TestCase):
     def test_repeated_source_does_not_claim_rotation(self):
         result = _daily_brief_frame({'recent_pub_count': 3, 'topic': 'Strategy'})
         self.assertNotEqual(result['reading_mode'], 'Balance')
-        self.assertIn('appeared recently', result['daily_reason'])
+        self.assertNotIn('penalty', result['daily_reason'].lower())
+        self.assertIn('strategy', result['daily_reason'].lower())
 
 
 if __name__ == '__main__':
