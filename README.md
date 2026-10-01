@@ -2,6 +2,12 @@
 
 A mobile-first Telegram bot for curated professional reading and active learning.
 
+## Optional Jev shadow pilot
+
+The bot can now evaluate stored public article text with Jev alongside the existing reading workflow. Judgments cover content kind, topic, practical value, concrete examples, and access messages; daily selection and discussions stay on the existing logic during the pilot.
+
+Enable with `TYPESAFE_API_KEY` and `JEV_MODE=shadow` in Railway; the default is off. Use `/jev`, `/jev evaluate`, and `/jev report` to inspect results. See [JEV_PILOT.md](JEV_PILOT.md) for activation, safeguards, validation, and the rollout order: Brief Bot → Aided Marketing → AidedMind.
+
 ## v0.6 — Article Intelligence
 
 ### What changed
