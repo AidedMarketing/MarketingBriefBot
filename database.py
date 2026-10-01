@@ -4,6 +4,7 @@ import os
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -66,6 +67,15 @@ def init_db() -> None:
                     content_hash TEXT NOT NULL,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     UNIQUE(user_id, article_id, content_hash)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS jev_evaluations (
+                    article_id BIGINT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+                    fingerprint TEXT NOT NULL,
+                    result JSONB NOT NULL,
+                    evaluated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (article_id, fingerprint)
                 )
             """)
             cur.execute("""
@@ -490,6 +500,50 @@ def get_article(article_id: int):
                 WHERE a.id=%s
             """, (article_id,))
             return cur.fetchone()
+
+
+def get_jev_evaluation(article_id: int, fingerprint: str):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT result, evaluated_at,
+                       evaluated_at > NOW() - INTERVAL '15 minutes' AS recent
+                FROM jev_evaluations WHERE article_id=%s AND fingerprint=%s
+            """, (article_id, fingerprint))
+            return cur.fetchone()
+
+
+def save_jev_evaluation(article_id: int, result: dict):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO jev_evaluations (article_id, fingerprint, result)
+                VALUES (%s,%s,%s)
+                ON CONFLICT (article_id, fingerprint) DO UPDATE
+                SET result=EXCLUDED.result, evaluated_at=NOW()
+            """, (article_id, result["fingerprint"], Jsonb(result)))
+
+
+def get_jev_report(user_id: int):
+    """Aggregate only the requesting reader's delivered public articles."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                WITH latest AS (
+                    SELECT DISTINCT ON (e.article_id) e.article_id, e.result
+                    FROM jev_evaluations e
+                    WHERE EXISTS (
+                        SELECT 1 FROM activity act WHERE act.article_id=e.article_id
+                        AND act.user_id=%s AND act.action='delivered'
+                    )
+                    ORDER BY e.article_id, e.evaluated_at DESC
+                )
+                SELECT result->>'status' AS status, COUNT(*) AS count,
+                       SUM(COALESCE((result->'usage'->>'input_tokens')::BIGINT, 0)) AS input_tokens,
+                       AVG((result->>'duration_ms')::NUMERIC) AS duration_ms
+                FROM latest GROUP BY result->>'status' ORDER BY status
+            """, (user_id,))
+            return cur.fetchall()
 
 
 def get_today_article(user_id: int):

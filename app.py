@@ -3,6 +3,8 @@ import logging
 import time
 
 import bot
+from jev import JevConfig
+from jev_pilot import evaluate_stored_article
 from daily_brief import format_article as format_daily_article
 from daily_brief import get_today_article as get_daily_article
 
@@ -12,6 +14,24 @@ _REFRESH_COOLDOWN_SECONDS = 300
 _last_refresh_started = 0.0
 _refresh_task = None
 _enriching_article_ids = set()
+_jev_article_ids = set()
+
+
+def _schedule_jev_evaluation(article: dict):
+    if not JevConfig.from_env().enabled or article['id'] in _jev_article_ids:
+        return
+    article_id = article['id']
+    _jev_article_ids.add(article_id)
+
+    async def evaluate():
+        try:
+            await asyncio.to_thread(evaluate_stored_article, article)
+        except Exception as exc:
+            logger.warning("Background Jev evaluation failed error_type=%s", type(exc).__name__)
+        finally:
+            _jev_article_ids.discard(article_id)
+
+    asyncio.create_task(evaluate())
 
 
 def _schedule_source_refresh():
@@ -58,6 +78,7 @@ def _schedule_article_enrichment(article: dict):
         started = time.monotonic()
         try:
             await asyncio.to_thread(bot.enrich_article, article)
+            _schedule_jev_evaluation(article)
             logger.info(
                 "Background article enrichment completed article_id=%s duration_ms=%s",
                 article_id,
@@ -117,6 +138,9 @@ async def daily_today(update, context, force_new=False):
     except Exception:
         logger.exception("Could not activate discussion for article %s", article["id"])
     await asyncio.to_thread(bot.record_activity, article["id"], "delivered", uid, True)
+    # Full articles do not enter enrichment; evaluate them after delivery instead.
+    if (article.get("content_status") or "metadata_only") == "full":
+        _schedule_jev_evaluation(article)
 
 
 async def daily_next(update, context):

@@ -29,6 +29,7 @@ from database import (
     get_article,
     get_discussion_history,
     get_history,
+    get_jev_report,
     get_learning_profile,
     get_import_session,
     get_learning_notes,
@@ -47,6 +48,8 @@ from database import (
 )
 from importer import ingest_shared_url, source_for_url
 from sources import enrich_article, refresh_sources
+from jev import JevConfig
+from jev_pilot import evaluate_stored_article, format_evaluation, inspect_article
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +214,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/refresh — Find new articles\n"
         "/debugarticle <keyword> — Inspect latest /today article\n"
         "/debugarticle active <keyword> — Inspect active discussion\n"
+        "/jev — Inspect the optional article evaluation pilot\n"
         "/finishimport — Finish an article import\n"
         "/cancelimport — Cancel an article import\n"
         "/end — End an active discussion\n"
@@ -393,6 +397,46 @@ async def debug_article_command(update: Update, context: ContextTypes.DEFAULT_TY
         ])
 
     await update.message.reply_text("\n".join(lines))
+
+
+async def jev_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    args = [value.lower() for value in context.args]
+    if any(value not in ("status", "evaluate", "active", "report") for value in args):
+        await update.message.reply_text("Use /jev, /jev evaluate, /jev active, /jev evaluate active, or /jev report.")
+        return
+    config = JevConfig.from_env()
+    if "report" in args:
+        try:
+            rows = await asyncio.to_thread(get_jev_report, uid)
+            lines = ["Jev pilot: latest evaluation per article you received (all recorded rubrics/models).",
+                     "This reports coverage and usage, not measured accuracy or total billing."]
+            for row in rows:
+                lines.append(f"{row['status']}: {row['count']} articles | {row['input_tokens'] or 0} input tokens | average {round(row['duration_ms'] or 0)} ms")
+            await send_long_reply(update.message, "\n".join(lines) if rows else "No Jev evaluations for your delivered articles yet.")
+        except Exception:
+            await update.message.reply_text("The pilot report is unavailable right now. Reading continues normally.")
+        return
+    if not config.enabled:
+        await update.message.reply_text(format_evaluation({"status": "disabled" if config.mode == "off" else "unconfigured"}))
+        return
+    try:
+        if "active" in args:
+            article = await asyncio.to_thread(get_active_discussion, uid)
+        else:
+            recent = await asyncio.to_thread(get_history, uid, 1)
+            article = await asyncio.to_thread(get_article, recent[0]["id"]) if recent else None
+        if not article:
+            await update.message.reply_text("Run /today first, or use /jev active during an article discussion.")
+            return
+        if "evaluate" in args:
+            await update.message.reply_text("Checking the stored public article text with Jev…")
+            result = await asyncio.to_thread(evaluate_stored_article, article, config)
+        else:
+            result = await asyncio.to_thread(inspect_article, article, config)
+        await send_long_reply(update.message, article["title"] + "\n\n" + format_evaluation(result))
+    except Exception:
+        await update.message.reply_text("The Jev pilot is unavailable right now. Reading continues normally.")
 
 
 async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -749,6 +793,7 @@ def main():
         ("notes", notes),
         ("refresh", refresh_command),
         ("debugarticle", debug_article_command),
+        ("jev", jev_command),
         ("memory", memory_command),
         ("end", end_command),
         ("note", note_command),
